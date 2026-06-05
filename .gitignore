@@ -1,0 +1,38 @@
+# Môi trường ảo Python
+.noti_server_venv/
+
+
+# Cache Python và tệp sinh ra khi build
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+
+# Biến môi trường và thông tin bảo mật local
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+
+# Tệp cấu hình IDE và tệp hệ điều hành tự sinh
+.vscode/
+# .idea/
+# .DS_Store
+# Thumbs.db
+
+# # Tệp log và tệp tạm
+# *.log
+# logs/
+# tmp/
+# temp/
+
+
+# # Cơ sở dữ liệu local
+# *.sqlite
+# *.sqlite3
+# *.db
