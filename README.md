@@ -61,6 +61,14 @@ Redis Stream
 Client nhận tiến trình realtime
 ```
 
+Ta khởi động Redis trước bằng Docker và `Docker-compose`.  
+Mở `Docker Desktop` và chạy lệnh sau trên `Terminal`:  
+```bash
+docker compose up -d
+```
+
+
+
 Các mục chính trong dự án như sau:  
 
 # I. API Server
