@@ -19,7 +19,7 @@ from websockets.exceptions import ConnectionClosed
 API_BASE_URL = "http://127.0.0.1:8000"
 
 # Notification server: nơi có WebSocket /noti/ws/...
-NOTI_WS_BASE_URL = "ws://192.168.1.15:1234/noti"
+NOTI_WS_BASE_URL = "ws://127.0.0.1:1234/noti"
 
 # Đường dẫn login API.
 LOGIN_PATH = "/auth/login"
