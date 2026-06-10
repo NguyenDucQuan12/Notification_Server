@@ -4,8 +4,7 @@ import json
 import secrets
 from typing import Any
 
-import redis.asyncio as redis_async
-
+from fastapi import HTTPException, status
 from services.redis_client import get_redis_fast
 from utils.redis_keys import ws_ticket_key
 
@@ -55,13 +54,17 @@ async def create_ws_ticket(
         "channel": channel,
         "job_id": job_id,
     }
-
-    await redis_client.set(
-        ws_ticket_key(ticket),
-        json.dumps(payload, ensure_ascii=False),
-        ex=WS_TICKET_TTL_SECONDS,
-    )
-
+    try:
+        await redis_client.set(
+            ws_ticket_key(ticket),
+            json.dumps(payload, ensure_ascii=False),
+            ex=WS_TICKET_TTL_SECONDS,
+        )
+    except Exception as e:
+        raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"message":f"Không thể tạo ticket lên Redis: {str(e)}"},
+                )
     return ticket
 
 
