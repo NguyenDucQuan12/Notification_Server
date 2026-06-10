@@ -507,7 +507,7 @@ async def security_guard(request: Request, call_next):
             res = await pipe.execute()
             return int(res[0]) if res and res[0] is not None else 0
 
-        s5xx = int(_redis_safe(_op_5xx_metric, default=0, desc="metric_5xx") or 0)
+        s5xx = int(await _redis_safe(_op_5xx_metric, default=0, desc="metric_5xx") or 0)
 
         if s5xx >= ALERT_5XX_PER_MIN:
             system_logger.warning("5xx/min vượt ngưỡng: %s >= %s", s5xx, ALERT_5XX_PER_MIN)
