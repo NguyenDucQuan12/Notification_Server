@@ -1,22 +1,18 @@
 from __future__ import annotations
 from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect, status
-import redis.asyncio as redis_async
 from redis.exceptions import RedisError
 
 from utils.auth import Identity
 from config.configs import settings
+from services.redis_client import get_redis_stream
 from utils.events import fields_to_event
 from utils.utils import safe_json_dumps, normalize_last_event_id, build_connected_message, build_heartbeat_message, build_server_error_message
 
 
 
 # Tạo kết nối tới Redis
-redis_client = redis_async.from_url(
-    settings.REDIS_URL,
-    decode_responses=True,
-)
-
+redis_client = get_redis_stream()
 class NotiController:
     """
     Controller xử lý nghiệp vụ thông báo.
