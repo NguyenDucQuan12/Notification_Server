@@ -4,7 +4,7 @@ from typing import Any
 
 from services.redis_client import get_redis_stream
 from utils.events import event_to_redis_fields
-from utils.redis_keys import job_stream_key, tenant_stream_key, user_stream_key
+from utils.redis_keys import job_stream_key, tenant_stream_key, user_stream_key, global_stream_key
 
 
 # Kết nối Redis dùng chung cho toàn bộ notification service, có thể tái sử dụng để subscribe event nếu cần.
@@ -98,7 +98,7 @@ async def publish_job_event(
         )
 
     if send_to_global:
-        key = "global:events"
+        key = global_stream_key()
         result["global_event_id"] = await publish_event_to_stream(
             stream_key=key,
             event=event,
