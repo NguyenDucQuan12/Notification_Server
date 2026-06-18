@@ -1,17 +1,14 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from db.database import engine
-from dotenv import load_dotenv
 from pathlib import Path
 from sqlalchemy import text
-import os
+from config.config import settings
 
 from services.redis_client import get_redis_fast
 
 
-load_dotenv()  # Tự động tìm và nạp file .env ở thư mục hiện tại
-
-UPLOAD_DIRECTORY = os.getenv("UPLOAD_DIRECTORY", "/app/uploads")
+UPLOAD_DIRECTORY =settings.upload_directory
 
 # Khai báo router với tiền tố cho các endpoint là: /user_login/xxx
 router = APIRouter(
@@ -52,9 +49,7 @@ async def readyz():
 
     checks: dict[str, str] = {}
 
-    # ======================================================
-    # 1. Kiểm tra DB
-    # ======================================================
+    # Kiểm tra DB
     try:
         async with engine.connect() as conn:
             result = await conn.execute(text("SELECT 1"))
@@ -63,14 +58,12 @@ async def readyz():
         if value == 1:
             checks["db"] = "ok"
         else:
-            checks["db"] = f"error: unexpected result {value}"
+            checks["db"] = f"DB trả về kết quả không xác định: {value}"
 
     except Exception as exc:
-        checks["db"] = f"error: {type(exc).__name__}: {str(exc)}"
+        checks["db"] = f"Lỗi kết nối DB: {type(exc).__name__}: {str(exc)}"
 
-    # ======================================================
-    # 2. Kiểm tra Redis
-    # ======================================================
+    # Kiểm tra Redis
     try:
         redis_client = get_redis_fast()
 
@@ -79,14 +72,12 @@ async def readyz():
         if pong is True or pong == "PONG":
             checks["redis"] = "ok"
         else:
-            checks["redis"] = f"error: unexpected ping result {pong}"
+            checks["redis"] = f"Lỗi kết nối Redis: unexpected ping result {pong}"
 
     except Exception as exc:
-        checks["redis"] = f"error: {type(exc).__name__}: {str(exc)}"
+        checks["redis"] = f"Lỗi Redis: {type(exc).__name__}: {str(exc)}"
 
-    # ======================================================
-    # 3. Kiểm tra quyền ghi thư mục upload
-    # ======================================================
+    # Kiểm tra quyền ghi thư mục upload
     try:
         upload_dir = Path(UPLOAD_DIRECTORY)
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -103,11 +94,9 @@ async def readyz():
         checks["fs"] = "ok"
 
     except Exception as exc:
-        checks["fs"] = f"error: {type(exc).__name__}: {str(exc)}"
+        checks["fs"] = f"Lỗi khi kiểm tra thư mục: {type(exc).__name__}: {str(exc)}"
 
-    # ======================================================
-    # 4. Tổng hợp kết quả
-    # ======================================================
+    # Tổng hợp kết quả
     ok = all(value == "ok" for value in checks.values())
 
     return JSONResponse(
