@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 from typing import Any, Literal
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-
 from auth.oauth2 import required_token_user
 from services.ws_ticket_service import create_ws_ticket
 
@@ -23,9 +20,10 @@ def has_permission(current_user: dict[str, Any], permission: str) -> bool:
 
     if current_user.get("is_superuser"):
         return True
-
+    # Lấy quyền hạn của người dùng
     permissions = current_user.get("permissions") or []
 
+    # nếu quyền hạn người dùng nhập vào trùng với quyền hạn được lưu trong CSDL thì trả về True, ngược lại False
     return permission in permissions
 
 
@@ -54,7 +52,7 @@ async def create_notification_ws_ticket(
     hoặc:
     POST /notifications/ws-ticket?channel=global
     """
-
+    # Với từng kênh thì ta yêu cầu từng quyền hạn riêng
     if channel == "user":
         required_permission = "notification:subscribe"
 
@@ -79,6 +77,7 @@ async def create_notification_ws_ticket(
             detail={"message": f"Thiếu quyền: {required_permission}"},
         )
 
+    # Tạo 1 ticket cho người dùng
     ticket = await create_ws_ticket(
         identity=current_user,
         channel=channel,
