@@ -58,7 +58,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     docs_url="/myapi",        # Đặt đường dẫn Swagger UI thành "/myapi"
     redoc_url=None,           # Tắt Redoc UI
-    path_prefix="/quan/api",  # Đặt tiền tố chung cho tất cả endpoint là "/quan/api"
     lifespan= lifespan        # Thêm câu lệnh lifespan để thực hiện các tác vụ khi khởi động và kết thúc server
 )
 
@@ -106,5 +105,5 @@ if __name__ == "__main__":
     #Thêm tham số log_config= "logs\\logging_config.json" để chuyển các log của uvicorn vào tệp
     uvicorn.run("__main__:app", host="0.0.0.0", port=PORT)  # log_config= "logs\\logging_config.json"
 
-    # Hoặc gõ trực tiếp lệnh `fastapi dev src/main.py` để vào chế độ developer
+    # Hoặc gõ trực tiếp lệnh `fastapi dev fastapi_server/src/main.py` để vào chế độ developer
     # Hoặc gõ trực tiếp lệnh `fastapi run src/main.py` để vào chế độ lấy máy chạy làm server
