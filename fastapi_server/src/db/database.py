@@ -7,9 +7,7 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-
-load_dotenv()
-
+from config.config import settings
 
 class Base(DeclarativeBase):
     """
@@ -26,19 +24,19 @@ def build_database_url() -> str:
     Tạo chuỗi kết nối SQL Server async.
     """
     # Lấy DATABASE_URL nếu đã được khai báo trong biến môi trường, thường dùng trong môi trường production với các dịch vụ như Azure SQL.
-    database_url = os.getenv("DATABASE_URL")
+    database_url = settings.database_url
     if database_url:
         return database_url
 
     # Nếu DATABASE_URL không có, tạo chuỗi kết nối từ các biến môi trường khác.
     connection_string = (
-        f"DRIVER={{{os.getenv('SQL_SERVER_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
-        f"SERVER={os.getenv('SQL_SERVER_HOST', 'localhost')};"
-        f"DATABASE={os.getenv('SQL_SERVER_DATABASE')};"
-        f"UID={os.getenv('SQL_SERVER_USERNAME')};"
-        f"PWD={os.getenv('SQL_SERVER_PASSWORD')};"
+        f"DRIVER={settings.sql_server_driver};"
+        f"SERVER={settings.db_host};"
+        f"DATABASE={settings.db_name};"
+        f"UID={settings.db_user};"
+        f"PWD={settings.db_password};"
         # f"Encrypt={os.getenv('SQL_SERVER_ENCRYPT', 'yes')};"
-        f"TrustServerCertificate={os.getenv('SQL_SERVER_TRUST_CERTIFICATE', 'yes')};")
+        f"TrustServerCertificate={settings.trust_db_server};")
 
     # Trả về chuỗi kết nối theo định dạng mà SQLAlchemy async cần, sử dụng quote_plus để mã hóa connection string cho URL.
     return f"mssql+aioodbc:///?odbc_connect={quote_plus(connection_string)}"
@@ -49,11 +47,11 @@ DATABASE_URL = build_database_url()
 # Tạo Async Engine để kết nối với SQL Server. Các tham số pool_pre_ping, pool_recycle, pool_size, max_overflow giúp quản lý kết nối hiệu quả hơn.
 engine = create_async_engine(
     DATABASE_URL,
-    echo=os.getenv("DB_ECHO", "false").lower() == "true",
+    echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
-    pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+    pool_size=int(settings.db_pool),
+    max_overflow=int(settings.db_max_overflow),
 )
 
 # Factory tạo session async. Mỗi request hoặc task nên sử dụng một session riêng để tránh xung đột dữ liệu. expire_on_commit=False giúp các object vẫn có thể truy cập được các field sau khi commit.
