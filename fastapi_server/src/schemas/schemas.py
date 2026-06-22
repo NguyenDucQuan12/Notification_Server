@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from fastapi import Form
 from typing import Generic, TypeVar
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -327,26 +328,56 @@ class UserAuthUpdate(BaseModel):
     is_login_enabled: bool | None = Field( default=None, description="Cho phép hoặc khóa đăng nhập.", examples=[True], )
 
 
-class LoginRequest(BaseModel):
-    """
-    Schema dùng cho API đăng nhập.
+# class LoginRequest(BaseModel):
+#     """
+#     Schema dùng cho API đăng nhập.
 
-    Client gửi:
-    - tenant_id
-    - username
-    - password
+#     Client gửi:
+#     - tenant_id
+#     - username
+#     - password
 
-    Service sẽ:
-    - tìm user_auth theo username
-    - kiểm tra user thuộc tenant_id
-    - kiểm tra password với password_hash trong database
-    """
+#     Service sẽ:
+#     - tìm user_auth theo username
+#     - kiểm tra user thuộc tenant_id
+#     - kiểm tra password với password_hash trong database
+#     """
 
-    tenant_id: str = Field( min_length=1, max_length=64, description="Mã tenant của người đăng nhập.", examples=["tenant_demo"], )
+#     tenant_id: str = Field( min_length=1, max_length=64, description="Mã tenant của người đăng nhập.", examples=["tenant_demo"], )
 
-    username: str = Field( ..., min_length=3, max_length=128, description="Tên đăng nhập.", examples=["nguyenvana"], )
+#     username: str = Field( ..., min_length=3, max_length=128, description="Tên đăng nhập.", examples=["nguyenvana"], )
 
-    password: str = Field( ..., min_length=1, max_length=128, description="Mật khẩu đăng nhập.", examples=["123456"], )
+#     password: str = Field( ..., min_length=1, max_length=128, description="Mật khẩu đăng nhập.", examples=["123456"], )
+
+class LoginRequest:
+
+    def __init__(
+        self,
+        # tenant_id: str = Form(
+        #     ...,
+        #     min_length=1,
+        #     max_length=64,
+        #     description="Mã tenant của người đăng nhập.",
+        #     examples=["tenant_demo"],
+        # ),
+        username: str = Form(
+            ...,
+            min_length=3,
+            max_length=128,
+            description="Tên đăng nhập.",
+            examples=["nguyenvana"],
+        ),
+        password: str = Form(
+            ...,
+            min_length=1,
+            max_length=128,
+            description="Mật khẩu đăng nhập.",
+            examples=["123456"],
+        ),
+    ):
+        # self.tenant_id = tenant_id
+        self.username = username
+        self.password = password
 
 
 class ChangePasswordRequest(BaseModel):
@@ -461,6 +492,14 @@ class LoginDisplay(BaseModel):
     auth: UserAuthDisplay
     role: RoleDisplay | None = None
 
+class ExtendedLoginResponse(APIResponse[LoginDisplay]):
+    """
+    Response chuẩn OAuth2 kết hợp với cấu trúc APIResponse hệ thống.  
+    Có kế thừa class LoginDisplay
+    """
+
+    access_token: str
+    token_type: str
 
 class LoginResponse(APIResponse[LoginDisplay]):
     """
