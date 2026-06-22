@@ -22,7 +22,7 @@ ALGORITHM =  os.getenv("ALGORITHM", "HS256")  # Nếu ko tìm thấy thuật to�
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15")) # Nếu ko có thời gian hết hạn thì mặc định để 15 phút tồn tại cho token
 
 # Chỉ định nơi lấy token bằng hàm login
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="quan/api/auth/login")        # Địa chỉ này phải đúng với đường dẫn của hàm login tạo token ở router auth, nếu không sẽ bị lỗi: 422 Unprocessable Entity {"detail": [{"loc": ["body", "username"], "msg": "field required", "type": "value_error.missing"}, {"loc": ["body", "password"], "msg": "field required", "type": "value_error.missing"}]}
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")        # Địa chỉ này phải đúng với đường dẫn của hàm login tạo token ở router auth, nếu không sẽ bị lỗi: 422 Unprocessable Entity {"detail": [{"loc": ["body", "username"], "msg": "field required", "type": "value_error.missing"}, {"loc": ["body", "password"], "msg": "field required", "type": "value_error.missing"}]}
 
 # Chỉ định lấy token bằng hàm tự tạo
 async def get_optional_token(request: Request):
