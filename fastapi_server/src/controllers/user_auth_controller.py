@@ -180,7 +180,8 @@ class AuthController:
         """
 
         # Lấy các thông tin từ request và strip để loại bỏ khoảng trắng thừa ở đầu và cuối chuỗi. Điều này giúp tránh lỗi do người dùng nhập nhầm khoảng trắng khi đăng nhập hoặc đăng ký.
-        tenant_id = request.tenant_id.strip()         # Tenant ID để phân biệt người dùng này thuộc về tổ chức/ nhóm nào, giúp quản lý người dùng theo tenant.
+        # Vì Form đăng nhập của FastAPI trong Swagger chỉ có 2 trường username và password nên tạm thời trường tenant sẽ mặc định là system
+        tenant_id = "system" # request.tenant_id.strip()         # Tenant ID để phân biệt người dùng này thuộc về tổ chức/ nhóm nào, giúp quản lý người dùng theo tenant.
         username = request.username.strip()
         password = request.password
 
@@ -212,7 +213,7 @@ class AuthController:
         if not login_data["success"]:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={"message": "Sai tài khoản hoặc mật khẩu"},
+                detail={"message": f"{login_data["message"]}"},
             )
 
         data = login_data["data"]
@@ -274,6 +275,9 @@ class AuthController:
 
         return {
             "success": True,
+            # ĐƯA 2 TRƯỜNG NÀY RA NGOÀI CÙNG ĐỂ KHỚP CHUẨN OAUTH2 CỦA FASTAPI, khi đó sử dụng các api khác bị khóa từ Swagger thì FastAPI tự động lấy accesstoken để truy vấn
+            "access_token": access_token,
+            "token_type": "bearer",
             "data": {
                 "token": {
                     "access_token": access_token,
