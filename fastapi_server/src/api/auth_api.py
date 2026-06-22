@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from controllers.user_auth_controller import AuthController
 from db.database import get_db
-from schemas.schemas import APIResponse, LoginDisplay, LoginRequest, RegisterUserRequest, RegisterUserDisplay
+from schemas.schemas import APIResponse, LoginDisplay, LoginRequest, RegisterUserRequest, RegisterUserDisplay, ExtendedLoginResponse
 
 
 router = APIRouter(
@@ -43,10 +43,11 @@ async def register_user(
 
 @router.post(
     "/login",
-    response_model=APIResponse[LoginDisplay],
+    # response_model=APIResponse[LoginDisplay],
+    response_model = ExtendedLoginResponse,
 )
 async def login(
-    request: LoginRequest,
+    request: LoginRequest = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     """
