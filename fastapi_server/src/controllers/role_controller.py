@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +10,11 @@ from db.query_roles import activate_role, create_role, delete_role, get_all_role
 from schemas.schemas import RoleActivateRequest, RoleCreate, RoleUpdate
 from utils.events import build_job_event, build_role_event
 from services.notification_publisher import publish_job_event
+from services.notification_orchestrator import (
+    NotificationDispatchMode,
+    create_role_notification_safely,
+    create_role_updated_notification_safely
+)
 
 
 # Regex kiểm tra role_id.
@@ -265,11 +269,7 @@ class RoleController:
         # Nếu client tự truyền role_id, kiểm tra trước cho thông báo rõ ràng hơn.
         # Nếu không kiểm tra, DB vẫn có thể báo lỗi unique, nhưng message sẽ khó hiểu hơn.
         if role_id is not None:
-            existing_role = await get_role_by_role_id(
-                db,
-                role_id=role_id,
-                include_user_count=False,
-            )
+            existing_role = await get_role_by_role_id( db, role_id=role_id, include_user_count=False, )
 
             if existing_role["success"]:
                 raise HTTPException(
@@ -280,9 +280,10 @@ class RoleController:
             if existing_role["success"] is False:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={"message": existing_role["message"]},
+                    detail={"message": f"Lỗi khi kiểm tra role id: {existing_role["message"]}"},
                 )
 
+        # Tạo 1 role mới
         created = await create_role(
             db,
             role_id=role_id,
@@ -294,13 +295,13 @@ class RoleController:
         if not created["success"]:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"message": created["message"]},
+                detail={"message": f" Lỗi khi tạo role: {created["message"]}"},
             )
         
         # Lấy dữ liệu role vừa tạo.
         role_data = created["data"]
 
-        # Tạo event role.created.
+        # Tạo event để gửi thông báo
         event = build_job_event(
             event_type="role.created",
             tenant_id= "test",
@@ -331,8 +332,39 @@ class RoleController:
             #         "error_type": type(exc).__name__,
             #         "error_message": str(exc),
             #     },
-            # )
+            # )try:
+            permissions = json.loads(permissions_json)
+        except json.JSONDecodeError:
+            permissions = []
 
+        # ====================================================
+        # TẠO NOTIFICATION
+        # ====================================================
+        #
+        # DIRECT:
+        # - ghi notification DB
+        # - ghi outbox
+        # - thử publish Redis ngay
+        # - Redis lỗi thì worker retry
+        #
+        # WORKER:
+        # - chỉ ghi notification DB + outbox
+        # - worker publish sau
+        #
+
+        notification_result = (
+            await create_role_notification_safely(
+                tenant_id=current_user["tenant_id"],
+                role_data=role_data,
+                permissions=permissions,
+                current_user=current_user,
+                mode=NotificationDispatchMode.DIRECT,      # Nếu muốn đổi sang worker thì đổi: mode=NotificationDispatchMode.WORKER
+            )
+        )
+
+        # Có thể trả metadata để debug.
+        # Không nên coi notification_failed là lỗi API tạo role.
+        created["data"]["notification"] = notification_result
         return created
 
     @staticmethod
@@ -475,6 +507,7 @@ class RoleController:
                 detail={"message": "Không có dữ liệu nào để cập nhật role"},
             )
 
+        # Tiến hành cập nhật dữ liệu cho role
         result = await update_role(
             db,
             role_id=role_id,
@@ -494,6 +527,52 @@ class RoleController:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"message": result["message"]},
             )
+        
+        # ====================================================
+        # TẠO NOTIFICATION
+        # ====================================================
+        #
+        # DIRECT:
+        # - ghi notification DB
+        # - ghi outbox
+        # - thử publish Redis ngay
+        # - Redis lỗi thì worker retry
+        #
+        # WORKER:
+        # - chỉ ghi notification DB + outbox
+        # - worker publish sau
+        
+        # Snapshot role sau cập nhật.
+        after_role = dict(result["data"])
+
+        notification_result = await create_role_updated_notification_safely(
+                tenant_id=current_user["tenant_id"],
+
+                before_role=after_role,         # Dữ liệu role trước khi cập nhật, nên thay bằng cách là truy vấn data trước khi update
+                after_role=after_role,          # Dữ liệu role sau khi cập nhật, dùng để so sánh sự khác nhau trước và sau cập nhật
+
+                target_user_id=None,            # Thêm id của 1 user cụ thể nếu muốn họ nhận thông báo này (Ngoại trừ các Admin đã nhận thông báo thì muốn thêm người này)
+
+                current_user=current_user,      # Người dùng đang thao tác
+
+                # Thử gửi ngay; nếu lỗi, worker retry.
+                mode=NotificationDispatchMode.DIRECT,
+
+                # False:
+                # admin nghe noti qua tenant dashboard.
+                #
+                # True:
+                # mỗi admin còn nhận user stream cá nhân.
+                send_to_admin_personal_streams=False,
+                # Có thể lấy từ header X-Idempotency-Key để ngăn một request bị retry nhiều lần tạo notification trùng
+                idempotency_key=None,
+            )
+
+        # Kết quả notification chỉ là metadata bổ sung.
+        # Không làm thay đổi success của update role.
+        result["data"]["notification"] = (
+            notification_result
+        )
 
         return result
 
