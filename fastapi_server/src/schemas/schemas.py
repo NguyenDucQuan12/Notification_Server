@@ -350,6 +350,14 @@ class UserAuthUpdate(BaseModel):
 #     password: str = Field( ..., min_length=1, max_length=128, description="Mật khẩu đăng nhập.", examples=["123456"], )
 
 class LoginRequest:
+    """
+    Class login để có thể đăng nhập từ Swagger của FastAPI thì chỉ có 2 trường là:  
+    - username
+    - password
+
+    Hai trường này phải nằm ở dạng Form, nếu ở dạng string, json, Field thì đều không thể đăng nhập từ Swagger của FASTAPI  
+    Nếu muốn thêm trường Tenant thì chưa có giải pháp, cần suy nghĩ thêm
+    """
 
     def __init__(
         self,
