@@ -79,7 +79,7 @@ app.include_router(bootstrap_api.router)
 @app.get('/favicon.ico')
 async def favicon():
     file_name = "favicon.ico"
-    file_path = os.path.join("assets", "images", "static", file_name)
+    file_path = os.path.join("static", file_name)
     return FileResponse(path=file_path, headers={"Content-Disposition": "attachment; filename=" + file_name})
 
 
