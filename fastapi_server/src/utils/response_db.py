@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from db.models import Users, UserAuth, Roles, JobRecord
+from models.job_record_model import JobRecord
+from models.role_model import Roles
+from models.user_auth_model import UserAuth
+from models.users_model import Users
 
 
 def utc_now() -> datetime:
