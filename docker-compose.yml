@@ -1,6 +1,116 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: realtime_demo_redis
+    container_name: redis_services
+    command: ["redis-server", "--appendonly", "yes"]  # Cho phép ghi dữ liệu ra data để bindmount ra ổ đĩa
+    # ports:
+      # - "6379:6379"
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    volumes:
+      - ./redis-data:/data
+    # Không publish 6379 ra Ubuntu host
+    networks:
+      - backend_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]   # 'PONG' = OK
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+  
+  docker_api:
+    # Cài đặt và khởi động: docker-compose up --build -d
+    # Dừng lại image trước khi chạy lại: docker compose down
+    build:
+      context: ./fastapi_server
+    image: fastapi-server:0.0.1
+    container_name: fastapi-server
+    extra_hosts:  # Thêm extrahost khi cài trên máy ubuntu, Bắt buộc trên Docker Engine Ubuntu/Linux
+    - "host.docker.internal:host-gateway"
+    # Nạp tệp biến môi trường vào docker
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.api
+
+    # === Biến môi trường cho app ===
+    environment:
+
+      # === SQL Server trên host ===
+      DB_HOST: "host.docker.internal"   # Win/mac: OK; Linux cần extra_hosts bên dưới
+      # Các tham số dưới đây phải được khai báo trong tệp .env, nếu không nó sẽ báo lỗi
+      DB_USER: "${DB_USER:?DB_USER is required}"
+      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
+      DB_NAME: "${DB_NAME:?DB_NAME is required}"
+
+      # === Thư mục gốc lưu file upload TRONG CONTAINER ===
+      UPLOAD_DIRECTORY: "/app/uploads"
+      APP_UPDATE_DIR: "/app/update_application"
+      API_LOG_DIRECTORY: "/app/log/api_log"
+      SYSTEM_LOG_DIRECTORY: "/app/log/system_log"
+
+      # (tuỳ chọn) CORS
+      # ALLOWED_ORIGINS: "http://localhost:3000,http://172.31.99.130"
+    
+    # Mở port để kết nối đến bên ngoài (8000:8000) theo thứ tự PORT để các thiết bị khác truy cập: PORT mở trong code và ở container
     ports:
-      - "6379:6379"
+      # - "8000:8000"
+      # - "${PORT_HOST}:8000"
+      - "${TAILSCALE_IP}:8001:8000"    # Client có thể truy cập api thông qua địa chỉ ip của tailscale:8001/api/xxx
+    networks:
+      - backend_network
+    # === Bind mount các thư mục cần ghi/đọc ===
+    volumes:
+      # Thư mục lưu file upload: host ./assets/file -> container /app/uploads
+      - type: bind
+        source: ./assets/file  # Đường dẫn trên máy chủ
+        target: /app/uploads   # Đường dẫn trong container (Phải trùng với khai báo phía trên)
+
+      # Thư mục lưu file cập nhật phần mềm: host ./assets/update_application -> container /app/update_application
+      - type: bind
+        source: ./assets/update_application  # Đường dẫn trên máy chủ
+        target: /app/update_application   # Đường dẫn trong container (Phải trùng với khai báo phía trên)
+
+      # Thư mục chứa log khi gọi api
+      - type: bind
+        source: ./log/api_log  # Đường dẫn trên máy chủ
+        target: /app/log/api_log # Đường dẫn trong container (Phải trùng với khai báo phía trên)
+
+      # Thư mục chứa log hệ thống
+      - type: bind
+        source: ./log/system_log  # Đường dẫn trên máy chủ
+        target: /app/log/system_log # Đường dẫn trong container (Phải trùng với khai báo phía trên)
+      
+    depends_on:
+      redis:          # đảm bảo Redis được khởi chạy trước api, tuy nhiên việc Redis sẵn sàng truy vấn khi api khởi động xong hay không thì chưa chắc
+        condition: service_healthy   # Thêm 1 điều kiện để chỉ start API khi Redis “healthy”                                    
+
+    # === Tự khởi động lại nếu crash ngoài ý muốn (Không khởi động lại do người dùng chủ động stop) ===
+    restart: unless-stopped
+    # Kiểm tra tình trạng của server
+    # Lệnh curl ... chạy trong chính container của service, không phải trên máy host.
+    # localhost nghĩa là bên trong container. Và app đang lắng nghe nội bộ cổng 8000
+    # -fsS ≈ --fail --silent --show-error: nếu HTTP status >= 400 thì trả về là lỗi, tắt progress/verbose (đỡ noisy), đi kèm -s để vẫn hiện lỗi khi fail (hữu ích để debug log).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/readyz"]
+      interval: 30s  # mỗi 30s kiểm tra một lần.
+      timeout: 5s  # quá 5s chưa xong xem như fail.
+      retries: 3  #  fail liên tiếp 3 lần → container unhealthy
+      start_period: 15s  # chờ 15s sau khi container start rồi mới tính fail.
+  notification-worker:
+    build:
+      context: ./worker_server
+    command:
+      - python
+      - -m
+      - workers.notification_outbox_worker
+    env_file:
+      - ./.env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  backend_network:
+    driver: bridge

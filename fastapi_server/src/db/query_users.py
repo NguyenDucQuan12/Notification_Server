@@ -3,10 +3,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import exc, select
+from sqlalchemy import exc, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Users, UserAuth, Roles, JobRecord
+from models.job_record_model import JobRecord
+from models.role_model import Roles
+from models.user_auth_model import UserAuth
+from models.users_model import Users
 from utils.utils import utc_now
 from utils.response_db import make_response, user_to_dict, auth_to_dict, role_to_dict, job_to_dict
 
@@ -134,6 +137,54 @@ async def get_user_by_user_id(
 
     return response
 
+async def get_admin_user_ids( db: AsyncSession, *, tenant_id: str, ) -> list[str]:
+    """
+    Lấy danh sách user_id của những tài khoản admin đang được phép đăng nhập.  
+    Điều kiện mẫu:  
+    - Cùng tenant. 
+    - Tài khoản đăng nhập đang được bật. 
+    - Là superuser hoặc có role_id = "admin".
+    Hàm trả trực tiếp list[str], ví dụ:  
+    [ 
+    "admin_001", 
+    "admin_002",
+    ]  
+    Không trả cấu trúc:  
+    { 
+    "success": True, 
+    "data": [...] 
+    }  
+    để service notification có thể sử dụng trực tiếp.  
+    """
+    statement = (
+        select(UserAuth.user_id)
+        .where(
+            UserAuth.tenant_id == tenant_id,
+            # Với SQL Server nên dùng == True. 
+            # Không nên dùng .is_(True) nếu dialect sinh ra IS 1. 
+            UserAuth.is_login_enabled == True, # noqa: E712
+            or_( UserAuth.is_superuser == True, # noqa: E712 
+                UserAuth.role_id == "admin",      
+                # UserAuth.role_id.in_([
+                #     "admin",
+                #     "system_admin",
+                #     "tenant_admin",
+                # ])
+                ),
+            )
+            .order_by(UserAuth.user_id.asc())
+        )
+    
+    result = await db.execute(statement)
+    # scalars() chỉ lấy cột user_id. 
+    user_ids = result.scalars().all()
+    # Loại ID rỗng và ID trùng.
+    return sorted( 
+        { str(user_id).strip()
+          for user_id in user_ids 
+          if user_id and str(user_id).strip() 
+        } 
+    )
 
 # ============================================================
 # 3. LẤY USER KÈM AUTH VÀ ROLE BẰNG JOIN THỦ CÔNG

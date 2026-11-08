@@ -8,8 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.query_roles import activate_role, create_role, delete_role, get_all_roles, get_role_by_role_id, update_role
 from schemas.schemas import RoleActivateRequest, RoleCreate, RoleUpdate
-from utils.events import build_job_event, build_role_event
-from services.notification_publisher import publish_job_event
 from services.notification_orchestrator import (
     NotificationDispatchMode,
     create_role_notification_safely,
@@ -301,42 +299,6 @@ class RoleController:
         # Lấy dữ liệu role vừa tạo.
         role_data = created["data"]
 
-        # Tạo event để gửi thông báo
-        event = build_job_event(
-            event_type="role.created",
-            tenant_id= "test",
-            user_id= role_data["role_id"],
-            job_id=role_data["role_name"],
-            status= f"Role {role_data['role_name']} đã được tạo",
-            progress="100",
-            message= role_data.get("description"),
-            filename= "",
-        )
-
-        # Ghi event vào global stream.
-        # Lưu ý: notification không nên làm hỏng nghiệp vụ chính.
-        # Nếu role đã tạo thành công nhưng ghi notification lỗi,
-        # ta chỉ log lỗi, không rollback role.
-        try:
-            global_event_id = await publish_job_event(event=event, send_to_user= False, send_to_job= False, send_to_tenant= False, send_to_global= True)
-
-            # Có thể gắn event_id vào response để debug nếu muốn.
-            created["data"]["global_event_id"] = global_event_id
-
-        except Exception as exc:
-            print(f"Không thể ghi dữ liệu thông báo vào noti server: {exc}")
-            # logger.warning(
-            #     "Không thể ghi role.created event vào global stream",
-            #     extra={
-            #         "role_id": role_data.get("role_id"),
-            #         "error_type": type(exc).__name__,
-            #         "error_message": str(exc),
-            #     },
-            # )try:
-            permissions = json.loads(permissions_json)
-        except json.JSONDecodeError:
-            permissions = []
-
         # ====================================================
         # TẠO NOTIFICATION
         # ====================================================
@@ -351,6 +313,7 @@ class RoleController:
         # - chỉ ghi notification DB + outbox
         # - worker publish sau
         #
+        permissions = json.loads(permissions_json)
 
         notification_result = (
             await create_role_notification_safely(
@@ -459,13 +422,7 @@ class RoleController:
         return result
 
     @staticmethod
-    async def update_role_info(
-        *,
-        role_id: str,
-        request: RoleUpdate,
-        db: AsyncSession,
-        current_user: dict[str, Any],
-    ) -> dict[str, Any]:
+    async def update_role_info( *, role_id: str, request: RoleUpdate, db: AsyncSession, current_user: dict[str, Any],) -> dict[str, Any]:
         """
         Cập nhật role.
 
@@ -476,11 +433,12 @@ class RoleController:
         - description
         - permissions_json
         """
-
+        # Xác thưc người dùng
         RoleController._require_superuser(current_user)
-
+        # Xác thực role id có hợp lệ không
         role_id = RoleController._validate_role_id(role_id)
 
+        # Khai báo các trường được phép cập nhật
         role_name = None
         description = None
         permissions_json = None
@@ -542,7 +500,7 @@ class RoleController:
         # - chỉ ghi notification DB + outbox
         # - worker publish sau
         
-        # Snapshot role sau cập nhật.
+        # Snapshot role sau cập nhật, dùng để so sánh trước và sau cập nhật
         after_role = dict(result["data"])
 
         notification_result = await create_role_updated_notification_safely(

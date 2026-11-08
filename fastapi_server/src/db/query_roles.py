@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-
 from sqlalchemy import exc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Roles, UserAuth
+from models.role_model import Roles
+from models.user_auth_model import UserAuth
 from utils.response_db import make_response, role_to_dict, utc_now
 
 

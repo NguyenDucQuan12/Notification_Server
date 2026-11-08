@@ -5,7 +5,9 @@ from typing import Any
 from sqlalchemy import and_, exc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Users, UserAuth, Roles
+from models.role_model import Roles
+from models.user_auth_model import UserAuth
+from models.users_model import Users
 from utils.utils import utc_now
 from utils.response_db import make_response, user_to_dict, role_to_dict, auth_to_dict
 

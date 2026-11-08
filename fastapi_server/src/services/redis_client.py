@@ -4,6 +4,7 @@ import os                 # Đọc biến môi trường để lấy REDIS_URL
 import redis              # Thư viện redis-py (pip install redis)
 import redis.asyncio as redis_async
 from redis.asyncio import Redis
+from config.config import settings
 """
 Đầu tiên cần chạy Redis server (có thể chạy local hoặc Docker).  
 Với Docker: `docker run -p 6379:6379 -it redis:latest`
@@ -19,7 +20,7 @@ Việc kết nối Redis nên dùng connection pool để tái sử dụng kết
 Mặc định Redis đã trả về pool nên ta ko cần cấu hình nữa
 """
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")  # REDIS_URL chuẩn trong Docker: redis://redis:6379/0
+REDIS_URL = settings.redis_url
 
 # ============================================================
 # 1. Timeout nhanh: dùng cho ping/cache/ticket/xadd/publish
@@ -35,7 +36,7 @@ redis_fast_client: Redis = redis_async.from_url(
     # Không nên quá thấp như 0.2 vì dễ lỗi giả khi Redis hơi chậm.
     socket_timeout=1.0,
     # Giới hạn số connection của pool.
-    max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "200")),
+    max_connections=int(settings.redis_max_connect),
     # Ping định kỳ để phát hiện connection chết.
     health_check_interval=30,
 
@@ -56,8 +57,8 @@ redis_stream_client: Redis = redis_async.from_url(
     socket_connect_timeout=0.5,
     # Phải lớn hơn thời gian XREAD BLOCK.
     # Ví dụ STREAM_BLOCK_MS = 15000 thì socket_timeout nên > 15 giây.
-    socket_timeout=float(os.getenv("REDIS_STREAM_SOCKET_TIMEOUT", "20")),
-    max_connections=int(os.getenv("REDIS_STREAM_MAX_CONNECTIONS", "200")),
+    socket_timeout=float(settings.redis_timeout),
+    max_connections=int(settings.redis_max_connect),
     health_check_interval=30,
     # Với notification/event JSON, True thường tiện hơn.
     decode_responses=True,

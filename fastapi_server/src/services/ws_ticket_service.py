@@ -7,11 +7,13 @@ from typing import Any
 from fastapi import HTTPException, status
 from services.redis_client import get_redis_fast
 from utils.redis_keys import ws_ticket_key
+from config.config import settings
 
 
+# Kết nối tới redis
 redis_client = get_redis_fast()
 
-WS_TICKET_TTL_SECONDS = 60
+WS_TICKET_TTL_SECONDS = int(settings.websocket_ticket_ttl)
 
 
 async def create_ws_ticket(
@@ -30,6 +32,7 @@ async def create_ws_ticket(
     - user
     - tenant_dashboard
     - job
+    - global
 
     job_id:
     - chỉ dùng khi cấp ticket nghe riêng một job
@@ -41,8 +44,10 @@ async def create_ws_ticket(
     - nếu lộ cũng giảm rủi ro hơn nhiều so với JWT dài hạn
     """
 
+    # Tạo 1 mã khóa token ngẫu nhiên
     ticket = secrets.token_urlsafe(32)
 
+    # Tạo payload chứa thông tin người dùng
     payload = {
         "tenant_id": identity["tenant_id"],
         "user_id": identity["user_id"],
@@ -54,6 +59,7 @@ async def create_ws_ticket(
         "channel": channel,
         "job_id": job_id,
     }
+    # Tạo một ticket lên redis
     try:
         await redis_client.set(
             ws_ticket_key(ticket),
@@ -63,7 +69,7 @@ async def create_ws_ticket(
     except Exception as e:
         raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={"message":f"Không thể tạo ticket lên Redis: {str(e)}"},
+                    detail={"message":f"Không thể tạo ticket kết nối websocket lên Redis: {str(e)}"},
                 )
     return ticket
 
@@ -82,10 +88,18 @@ async def consume_ws_ticket(ticket: str) -> dict[str, Any] | None:
     Nếu ticket không tồn tại:
     - trả None
     """
-
+    # Tạo key ticket giống với lúc đẩy lên Redis
     key = ws_ticket_key(ticket)
-
-    raw = await redis_client.get(key)
+    # Lấy thông tin ticket trên Redis
+    try:
+        raw = await redis_client.get(key)
+    except Exception as e:
+        raise HTTPException (
+            status_code= status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail= {
+                "message": f"Không thể lấy key ticket từ Redis: {str(e)}"
+            }
+        )
 
     if not raw:
         return None

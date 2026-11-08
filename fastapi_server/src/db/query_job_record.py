@@ -6,7 +6,8 @@ from typing import Any
 from sqlalchemy import exc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Users, JobRecord
+from models.job_record_model import JobRecord
+from models.users_model import Users
 from utils.response_db import make_response, user_to_dict, job_to_dict
 from utils.utils import utc_now
 

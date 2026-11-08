@@ -195,7 +195,7 @@ async def login_and_get_token() -> str:
     login_url = f"{API_BASE_URL}{LOGIN_PATH}"
 
     payload = {
-        "tenant_id": TENANT_ID,
+        # "tenant_id": TENANT_ID,
         "username": USERNAME,
         "password": PASSWORD,
     }
@@ -203,7 +203,7 @@ async def login_and_get_token() -> str:
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(
             login_url,
-            json=payload,
+            data=payload,       # Nếu dữ liệu nhận vào là json thì là data, nếu dữ liệu là json thì là json
         )
 
         # In rõ lỗi 422 để biết FastAPI đang thiếu field nào.

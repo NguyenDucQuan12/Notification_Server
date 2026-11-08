@@ -55,6 +55,8 @@ class Settings:
     redis_timeout: str
     websocket_ticket_ttl: str
 
+    stream_max_length: str
+
     upload_directory: str
     app_update_dir: str
     api_log_directory: str
@@ -78,6 +80,7 @@ def get_settings() -> Settings:
         redis_max_connect= os.getenv("REDIS_MAX_CONNECTIONS", "200"),
         redis_timeout= os.getenv("REDIS_STREAM_SOCKET_TIMEOUT", "200"),
         websocket_ticket_ttl= os.getenv("WS_TICKET_TTL_SECONDS", "60"),
+        stream_max_length= int(os.getenv("STREAM_MAX_LENGTH", "10000")),
         upload_directory=os.getenv( "UPLOAD_DIRECTORY", "/app/uploads"),
         app_update_dir=os.getenv( "APP_UPDATE_DIR", "/app/update_application"),
         api_log_directory=os.getenv( "API_LOG_DIRECTORY", "/app/log/api_log"),

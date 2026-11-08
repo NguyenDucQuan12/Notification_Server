@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+.vs
+
+# Python cache
+__pycache__
+**/__pycache__
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.noti_server_venv
+
+# Test/cache
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Environment/secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Local runtime data
+uploads
+temp
+tmp
+
+# Client test scripts không cần chạy trong API container
+client
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build
+dist
+*.egg-info

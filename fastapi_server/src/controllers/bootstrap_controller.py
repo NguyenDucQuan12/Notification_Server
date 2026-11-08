@@ -9,13 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from dotenv import load_dotenv
 
-from db.models import Users, UserAuth, Roles
+from models.role_model import Roles
+from models.user_auth_model import UserAuth
 from db.query_roles import create_role
 from db.query_users import create_user_profile
 from db.query_user_auth import create_user_auth
 from schemas.schemas import BootstrapAdminRequest
-from services.notification_publisher import publish_job_event
-from utils.events import build_role_event
 from auth.hash import Hash
 
 load_dotenv()
@@ -102,27 +101,6 @@ class BootstrapController:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail={"message": created_role["message"]},
                 )
-
-            role_data = created_role["data"]
-
-            # Ghi event role.created vào global stream.
-            # Lúc này có thể chưa có admin nào đang nghe,
-            # nhưng event vẫn được lưu trong Redis Stream.
-            try:
-                await publish_job_event(
-                    event=build_role_event(
-                        event_type="role.created",
-                        role_id=role_data["role_id"],
-                        role_name=role_data["role_name"],
-                        description=role_data.get("description"),
-                        permissions_json=role_data.get("permissions_json"),
-                        actor_user_id=None,
-                        actor_username="bootstrap",
-                        message="Role Admin được tạo trong quá trình bootstrap",
-                    )
-                )
-            except Exception:
-                pass
 
         # 2. Tạo hồ sơ user admin.
         created_user = await create_user_profile(
