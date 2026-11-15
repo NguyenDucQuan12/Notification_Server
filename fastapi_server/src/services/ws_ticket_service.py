@@ -12,22 +12,15 @@ from config.config import settings
 
 # Kết nối tới redis
 redis_client = get_redis_fast()
-
+# Thời gian sống của ticket WebSocket (giây). Mặc định 30 giây.
 WS_TICKET_TTL_SECONDS = int(settings.websocket_ticket_ttl)
 
 
-async def create_ws_ticket(
-    *,
-    identity: dict[str, Any],
-    channel: str,
-    job_id: str | None = None,
-) -> str:
+async def create_ws_ticket(*, identity: dict[str, Any], channel: str, job_id: str | None = None) -> str:
     """
-    Tạo WebSocket ticket ngắn hạn.
-
+    Tạo WebSocket ticket ngắn hạn.  
     identity:
-    - thông tin user lấy từ JWT/cookie sau khi HTTP API xác thực thành công
-
+    - thông tin user lấy từ JWT/cookie sau khi HTTP API xác thực thành công  
     channel:
     - user
     - tenant_dashboard
@@ -70,16 +63,12 @@ async def create_ws_ticket(
         raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail={"message":f"Không thể tạo ticket kết nối websocket lên Redis: {str(e)}"},
-                )
+                ) from e
     return ticket
-
 
 async def consume_ws_ticket(ticket: str) -> dict[str, Any] | None:
     """
-    Lấy và xóa WebSocket ticket.
-
-    Đây là thao tác dùng một lần.
-
+    Lấy và xóa WebSocket ticket trên Redis.  
     Nếu ticket tồn tại:
     - đọc payload
     - xóa ticket
@@ -90,24 +79,24 @@ async def consume_ws_ticket(ticket: str) -> dict[str, Any] | None:
     """
     # Tạo key ticket giống với lúc đẩy lên Redis
     key = ws_ticket_key(ticket)
-    # Lấy thông tin ticket trên Redis
+
+    # SỬA LỖI race condition: bản cũ GET rồi mới DELETE (2 lệnh riêng). Hai request
+    # gửi cùng lúc với cùng 1 ticket có thể cùng GET thành công trước khi DELETE chạy
+    # => ticket "dùng một lần" bị dùng 2 lần.
+    # GETDEL (Redis >= 6.2) đọc và xóa trong MỘT lệnh nguyên tử: chỉ 1 request nhận được payload.
     try:
-        raw = await redis_client.get(key)
+        raw = await redis_client.getdel(key)
     except Exception as e:
         raise HTTPException (
             status_code= status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail= {
-                "message": f"Không thể lấy key ticket từ Redis: {str(e)}"
-            }
-        )
+            # Không đưa str(e) cho client để tránh lộ thông tin hạ tầng (địa chỉ Redis...).
+            detail= {"message": "Không thể kiểm tra ticket kết nối websocket"},
+        ) from e
 
     if not raw:
         return None
 
-    # Xóa ngay để ticket không dùng lại được.
-    await redis_client.delete(key)
-
     try:
         return json.loads(raw)
-    except Exception:
+    except (TypeError, ValueError):
         return None
