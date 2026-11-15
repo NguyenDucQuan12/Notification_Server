@@ -1,10 +1,3 @@
-
-
-import os                 # Đọc biến môi trường để lấy REDIS_URL
-import redis              # Thư viện redis-py (pip install redis)
-import redis.asyncio as redis_async
-from redis.asyncio import Redis
-from config.config import settings
 """
 Đầu tiên cần chạy Redis server (có thể chạy local hoặc Docker).  
 Với Docker: `docker run -p 6379:6379 -it redis:latest`
@@ -19,6 +12,10 @@ Lưu ý: redis-py mặc định trả về bytes, bạn có thể decode thành 
 Việc kết nối Redis nên dùng connection pool để tái sử dụng kết nối TCP, giúp hiệu năng ổn định trong môi trường nhiều request.
 Mặc định Redis đã trả về pool nên ta ko cần cấu hình nữa
 """
+import redis.asyncio as redis_async
+from redis.asyncio import Redis
+from config.config import settings
+
 
 REDIS_URL = settings.redis_url
 
@@ -42,7 +39,6 @@ redis_fast_client: Redis = redis_async.from_url(
 
     # Nếu False: Redis trả bytes.
     # Nếu True: Redis trả str, code dễ đọc hơn, nhưng sẽ mất thời gian hơn
-    
     decode_responses=False,
 )
 
@@ -50,7 +46,6 @@ redis_fast_client: Redis = redis_async.from_url(
 # ============================================================
 # 2. Client stream: dùng riêng cho XREAD BLOCK
 # ============================================================
-
 redis_stream_client: Redis = redis_async.from_url(
     REDIS_URL,
     socket_keepalive=True,
@@ -63,7 +58,6 @@ redis_stream_client: Redis = redis_async.from_url(
     # Với notification/event JSON, True thường tiện hơn.
     decode_responses=True,
 )
-
 
 def get_redis_fast() -> Redis:
     """
@@ -79,9 +73,7 @@ def get_redis_fast() -> Redis:
 
     Không tạo client mới mỗi lần gọi.
     """
-
     return redis_fast_client
-
 
 def get_redis_stream() -> Redis:
     """
@@ -93,9 +85,7 @@ def get_redis_stream() -> Redis:
 
     Không dùng client fast cho XREAD BLOCK vì socket_timeout ngắn.
     """
-
     return redis_stream_client
-
 
 async def close_redis_clients() -> None:
     """
@@ -104,6 +94,5 @@ async def close_redis_clients() -> None:
     Với redis.asyncio, nên đóng client async rõ ràng.
     redis-py docs cũng ghi rõ async Redis cần gọi close/aclose để đóng connection.
     """
-
     await redis_fast_client.aclose()
     await redis_stream_client.aclose()
