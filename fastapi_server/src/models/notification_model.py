@@ -1,17 +1,5 @@
-from __future__ import annotations
-
-from datetime import datetime
-from typing import Optional
-
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Unicode, UnicodeText, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
-
-from db.database import Base
-from utils.utils import utc_now
-
-
-
 """
+Mô hình dữ liệu cho bảng thông báo.
 Notifications
 = Nội dung là gì?
 
@@ -54,10 +42,18 @@ notification_outbox
     aggregate_id = notification_id
     stream_key
 """
+from __future__ import annotations
+from datetime import datetime
+from typing import Optional
 
+from sqlalchemy import (
+    Boolean, CheckConstraint, DateTime, Index, Integer, String, Unicode, UnicodeText,
+    UniqueConstraint, text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
 
-
-
+from db.database import Base
+from utils.utils import utc_now
 
 # ============================================================
 # 1. BẢNG NOTIFICATIONS
@@ -147,19 +143,14 @@ class Notifications(Base):
             "deduplication_key",
             "created_at",
         ),
+
+        # Trạng thái chung của notification phải nằm trong danh sách cho phép.
+        CheckConstraint("status IN ('active', 'cancelled', 'expired')", name="ck_notifications_status"),
     )
 
     # --------------------------------------------------------
-    # ID NỘI BỘ
+    # ID NỘI BỘ: TỰ TĂNG TRONG SQL SERVER
     # --------------------------------------------------------
-
-    # ID số tự tăng của SQL Server.
-    #
-    # Chỉ dùng nội bộ để:
-    # - sắp xếp;
-    # - tối ưu join;
-    # - quản lý bản ghi trong DB.
-    #
     # Không nên trả trường này cho client.
     id: Mapped[int] = mapped_column(
         Integer,
@@ -167,63 +158,36 @@ class Notifications(Base):
         autoincrement=True,
     )
 
-    # ID public của notification.
-    #
-    # Ví dụ:
-    # noti_50a614d6b4714e58bc7582f45d43fc70
-    #
-    # ID này được dùng để:
+    # ID public của notification: noti_50a614d6b4714e58bc7582f45d43fc70
     # - API lấy chi tiết notification;
     # - liên kết với notification_recipients;
     # - liên kết với notification_deliveries;
     # - liên kết với notification_outbox.
     notification_id: Mapped[str] = mapped_column( String(64), unique=True, index=True, nullable=False, )
 
-    # ID của event nghiệp vụ.
-    #
-    # Ví dụ:
-    # evt_66849c09d1df4567a6f1d18aa0e1c602
-    #
-    # notification_id:
-    #     định danh nội dung thông báo.
-    #
-    # event_id:
-    #     định danh sự kiện đã tạo ra thông báo.
-    #
-    # Event ID rất hữu ích cho:
-    # - chống nhận trùng ở frontend;
-    # - theo dõi event xuyên nhiều Redis Stream;
-    # - audit;
-    # - trace.
+    # ID của event nghiệp vụ: evt_66849c09d1df4567a6f1d18aa0e1c602
+    # notification_id: định danh nội dung thông báo.
+    # event_id: định danh sự kiện đã tạo ra thông báo.
     event_id: Mapped[str] = mapped_column( String(64), unique=True, index=True, nullable=False, )
+
     # Phiên bản schema của payload event.
-    # Khi cấu trúc event thay đổi, client có thể xử lý dựa theo version.
     schema_version: Mapped[str] = mapped_column( String(20), default="1.0", nullable=False, )
 
-    # Tenant sở hữu notification.
-    #
-    # Bắt buộc trong hệ thống multi-tenant.
-    #
+    # Tổ chức sở hữu notification
     # Mọi truy vấn notification theo user nên đồng thời kiểm tra tenant_id
     # để tránh rò rỉ dữ liệu giữa các công ty.
-    tenant_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    tenant_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
-    # Loại sự kiện cụ thể.
+    # Loại sự kiện cụ thể tạo ra notification.
     # - role.created
     # - role.updated
     # - user.password_changed
     # - file.uploaded
     # - file.processing_failed
     # - job.completed
-    #
-    # Không nên dùng tên quá chung như:
-    # - UPDATE
-    # - NOTIFICATION
-    # - SYSTEM_EVENT
-    notification_type: Mapped[str] = mapped_column( String(128), index=True, nullable=False, )
+    notification_type: Mapped[str] = mapped_column( String(128), nullable=False, )
 
     # Nhóm chức năng lớn của notification.
-    #
     # Ví dụ:
     # - security
     # - role
@@ -238,7 +202,7 @@ class Notifications(Base):
     # - hiển thị icon;
     # - thống kê số chưa đọc theo nhóm;
     # - áp dụng notification preference.
-    category: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    category: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Tên service tạo notification.
     #
@@ -250,17 +214,12 @@ class Notifications(Base):
     source_service: Mapped[str] = mapped_column( String(100), nullable=False, )
 
     # Instance cụ thể tạo notification.
-    #
     # Ví dụ:
-    # - api-server-01
-    # - api-server-pod-b7f8c
     # - role-controller
-    #
     # Có thể để None nếu hệ thống chưa cần phân biệt instance.
     source_instance: Mapped[Optional[str]] = mapped_column( String(100), nullable=True, )
 
     # Môi trường tạo event.
-    #
     # Giá trị thường dùng:
     # - development
     # - testing
@@ -268,8 +227,7 @@ class Notifications(Base):
     # - production
     environment: Mapped[str] = mapped_column( String(32), default="production", nullable=False, )
 
-    # Loại actor.
-    #
+    # Loại hành động.
     # Ví dụ:
     # - user: người dùng thao tác
     # - system: hệ thống tự thực hiện
@@ -277,16 +235,14 @@ class Notifications(Base):
     actor_type: Mapped[Optional[str]] = mapped_column( String(32), nullable=True, )
 
     # ID actor.
-    #
+    # Ví dụ:
     # Nếu actor_type = user:
     #     actor_id là user_id.
-    #
     # Nếu actor_type = system:
     #     actor_id có thể là "system".
-    #
     # Nếu actor_type = service:
     #     actor_id có thể là "job-worker".
-    actor_id: Mapped[Optional[str]] = mapped_column( String(64), index=True, nullable=True, )
+    actor_id: Mapped[Optional[str]] = mapped_column( String(64), nullable=True, )
 
     # Tên hiển thị tại thời điểm tạo notification.
     actor_name: Mapped[Optional[str]] = mapped_column( Unicode(255), nullable=True, )
@@ -297,31 +253,19 @@ class Notifications(Base):
     # ========================================================
     # RESOURCE CHỈ ĐỐI TƯỢNG NGHIỆP VỤ BỊ TÁC ĐỘNG
     # ========================================================
-
     # Loại resource.
-    #
-    # Ví dụ:
-    # - role
-    # - user
-    # - job
-    # - file
-    # - order
-    resource_type: Mapped[Optional[str]] = mapped_column( String(64), index=True, nullable=True, )
+    # Ví dụ: role, job, file, order
+    resource_type: Mapped[Optional[str]] = mapped_column( String(64), nullable=True, )
 
-    # ID resource.
-    #
-    # Ví dụ:
+    # ID của đối tượng nghiệp vụ bị tác động.
     # resource_type = "role"
     # resource_id   = "warehouse_manager"
-    #
     # Hoặc:
     # resource_type = "job"
     # resource_id   = "job_123"
-    resource_id: Mapped[Optional[str]] = mapped_column( String(128), index=True, nullable=True, )
+    resource_id: Mapped[Optional[str]] = mapped_column( String(128), nullable=True, )
 
     # Phiên bản resource tại thời điểm xảy ra sự kiện.
-    #
-    # Hữu ích khi resource có optimistic locking hoặc versioning.
     resource_version: Mapped[Optional[int]] = mapped_column( Integer, nullable=True, )
 
     # Thông tin về người nhận thông báo
@@ -346,26 +290,16 @@ class Notifications(Base):
     # trong bảng notification_recipients.
     audience_json: Mapped[str] = mapped_column( UnicodeText, default="{}", nullable=False, )
 
-    # Danh sách kênh vận chuyển notification dưới dạng JSON.
-    #
+    # Các kênh gửi thông báo.
     # Ví dụ:
     # [
     #     "in_app",
     #     "websocket",
     #     "email"
     # ]
-    #
-    # Phân biệt:
-    #
-    # channels_json:
-    #     phương thức gửi, ví dụ websocket/email/push.
-    #
-    # stream_scope trong Outbox:
-    #     Redis stream cụ thể, ví dụ user/tenant/job/global.
     channels_json: Mapped[str] = mapped_column( UnicodeText, default="[]", nullable=False, )
 
     # Mã template dùng để render nội dung.
-    #
     # Ví dụ:
     # role.created
     # job.completed
@@ -376,11 +310,7 @@ class Notifications(Base):
     template_version: Mapped[Optional[str]] = mapped_column( String(32), nullable=True, )
 
     # Ngôn ngữ notification.
-    #
-    # Ví dụ:
-    # vi-VN
-    # en-US
-    # zh-CN
+    # Ví dụ: vi-VN, en-US, ja-JP
     locale: Mapped[str] = mapped_column( String(20), default="vi-VN", nullable=False, )
 
     # Tiêu đề thông báo.
@@ -416,7 +346,6 @@ class Notifications(Base):
     action_type: Mapped[str] = mapped_column( String(32), default="none", nullable=False, )
 
     # Đích đến của action.
-    #
     # Ví dụ:
     # - /roles/warehouse_manager
     # - /jobs/job_123
@@ -424,7 +353,6 @@ class Notifications(Base):
     action_target: Mapped[Optional[str]] = mapped_column( String(2048), nullable=True, )
 
     # Tên nút hiển thị.
-    #
     # Ví dụ:
     # - Xem chi tiết
     # - Tải xuống
@@ -432,7 +360,6 @@ class Notifications(Base):
     action_label: Mapped[Optional[str]] = mapped_column( Unicode(100), nullable=True, )
 
     # HTTP method nếu action có gọi API.
-    #
     # Đối với navigate/open_url thường dùng GET.
     action_method: Mapped[str] = mapped_column( String(10), default="GET", nullable=False, )
 
@@ -440,55 +367,34 @@ class Notifications(Base):
     action_open_new_tab: Mapped[bool] = mapped_column( Boolean, default=False, nullable=False,)
 
     # Dữ liệu máy đọc dùng để frontend hoặc service xử lý.
-    #
+    # Không nên lưu dữ liệu nhạy cảm ở đây.
     # Ví dụ:
     # {
     #     "role_id": "warehouse_manager",
     #     "role_name": "Warehouse Manager",
     #     "permissions": ["job:read", "job:create"]
     # }
-    #
-    # Không đưa vào đây:
-    # - password;
-    # - access token;
-    # - refresh token;
-    # - thông tin nhạy cảm không cần thiết.
     data_json: Mapped[str] = mapped_column( UnicodeText, default="{}", nullable=False, )
 
     # Mức ưu tiên gửi.
-    #
-    # Giá trị:
-    # - low
-    # - normal
-    # - high
-    # - urgent
+    # Giá trị: low, normal, high, urgent
     priority: Mapped[str] = mapped_column( String(20), default="normal", nullable=False, )
 
     # Mức độ nghiêm trọng hoặc kiểu hiển thị.
-    #
-    # Giá trị:
-    # - info
-    # - success
-    # - warning
-    # - error
-    # - critical
+    # Giá trị: info, success, warning, error
     severity: Mapped[str] = mapped_column( String(20), default="info", nullable=False, )
 
     # Khóa chống trùng do nghiệp vụ tự tạo.
-    #
     # Ví dụ:
     # role:company_a:warehouse_manager:created
-    #
     # Trước khi tạo notification, có thể query:
     # - cùng tenant_id;
     # - cùng deduplication_key;
     # - created_at nằm trong window.
-    deduplication_key: Mapped[Optional[str]] = mapped_column( String(255), index=True, nullable=True, )
+    deduplication_key: Mapped[Optional[str]] = mapped_column( String(255), nullable=True, )
 
     # Khoảng thời gian chống trùng, tính bằng giây.
-    #
-    # Ví dụ 300 giây:
-    # trong vòng 5 phút không tạo lại notification cùng key.
+    # Ví dụ 300 giây: trong vòng 5 phút không tạo lại notification cùng key.
     deduplication_window_seconds: Mapped[Optional[int]] = mapped_column( Integer, nullable=True, )
 
     # TTL nghiệp vụ của notification, tính bằng giây.
@@ -502,12 +408,8 @@ class Notifications(Base):
     retry_delay_seconds: Mapped[int] = mapped_column( Integer, default=10, nullable=False, )
 
     # Client có phải gửi ACK xác nhận đã nhận event hay không.
-    #
-    # False:
-    #     server gửi thành công qua socket là đủ.
-    #
-    # True:
-    #     cần cơ chế client ACK bằng notification_id/event_id.
+    # False: server gửi thành công qua socket là đủ.
+    # True: cần cơ chế client ACK bằng notification_id/event_id.
     require_ack: Mapped[bool] = mapped_column( Boolean, default=False, nullable=False, )
 
     # Ví dụ một request tạo role có thể:
@@ -515,35 +417,30 @@ class Notifications(Base):
     # - tạo audit log;
     # - tạo notification;
     # - publish Redis.
-    #
     # Các thao tác này dùng cùng correlation_id.
-    correlation_id: Mapped[Optional[str]] = mapped_column( String(128), index=True, nullable=True, )
+    correlation_id: Mapped[Optional[str]] = mapped_column( String(128), nullable=True, )
 
     # Trace ID của request phân tán qua nhiều service.
-    trace_id: Mapped[Optional[str]] = mapped_column( String(128), index=True, nullable=True, )
+    trace_id: Mapped[Optional[str]] = mapped_column( String(128), nullable=True, )
 
     # ID của hành động hoặc event trực tiếp gây ra notification.
-    #
+
     # Ví dụ:
     # role_create:warehouse_manager
     causation_id: Mapped[Optional[str]] = mapped_column( String(128), nullable=True, )
 
     # Trạng thái chung của notification.
-    #
     # Giá trị:
     # - active: còn hiệu lực
     # - cancelled: đã bị hủy
     # - expired: đã hết hạn
-    #
-    # Đây KHÔNG phải trạng thái unread/read.
-    status: Mapped[str] = mapped_column( String(20), default="active", index=True, nullable=False, )
+    status: Mapped[str] = mapped_column( String(20), default="active", nullable=False, )
 
     # Thời điểm notification được phép bắt đầu gửi.
     # Cho phép hỗ trợ notification lên lịch trong tương lai.
     available_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, nullable=False, )
 
     # Thời điểm notification hết giá trị.
-    #
     # Ví dụ notification chỉ có hiệu lực trong 7 ngày.
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True),index=True,nullable=True, )
 
@@ -552,7 +449,6 @@ class Notifications(Base):
 
     # Thời điểm cập nhật gần nhất.
     updated_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, )
-
 
 # ============================================================
 # 2. BẢNG NOTIFICATION_RECIPIENTS
@@ -587,7 +483,6 @@ class NotificationRecipients(Base):
 
     __table_args__ = (
         # Một user chỉ có một trạng thái đối với một notification.
-        #
         # Không được có:
         # noti_001 + user_a xuất hiện hai lần.
         UniqueConstraint(
@@ -596,16 +491,19 @@ class NotificationRecipients(Base):
             name="uq_notification_recipient",
         ),
 
-        # Tối ưu query:
-        #
-        # WHERE tenant_id = ?
-        #   AND recipient_user_id = ?
-        #   AND state = 'unread'
+        # Đếm số chưa đọc (badge) - FILTERED INDEX: chỉ chứa các dòng chưa đọc nên luôn nhỏ.
+        # WHERE tenant_id = ? AND recipient_user_id = ?
+        #   AND state = 'unread' AND deleted_at IS NULL
         Index(
-            "ix_notification_recipients_user_state",
+            "ix_notification_recipients_unread",
             "tenant_id",
             "recipient_user_id",
-            "state",
+            mssql_where=text("state = 'unread' AND deleted_at IS NULL"),
+        ),
+
+        CheckConstraint(
+            "state IN ('unread', 'seen', 'read', 'archived', 'deleted')",
+            name="ck_notification_recipients_state",
         ),
 
         # Tối ưu danh sách notification mới nhất của user.
@@ -621,51 +519,34 @@ class NotificationRecipients(Base):
     id: Mapped[int] = mapped_column( Integer, primary_key=True, autoincrement=True, )
 
     # ID notification chung.
-    #
     # Liên kết logic tới notifications.notification_id.
-    #
-    # Không có ForeignKey theo quy tắc thiết kế hiện tại của hệ thống.
-    notification_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    notification_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Tenant của người nhận.
-    tenant_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    tenant_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # User nhận notification.
-    #
     # Liên kết logic tới users.user_id.
-    recipient_user_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    recipient_user_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Trạng thái notification của riêng user này.
-    #
     # Luồng thường gặp:
-    #
-    # unread
-    #   ↓
-    # seen
-    #   ↓
-    # read
-    #
-    # Hoặc:
-    # read → archived
-    #
+    # unread → seen → read → archived
     # Hoặc:
     # bất kỳ trạng thái nào → deleted
-    state: Mapped[str] = mapped_column( String(20), default="unread", index=True, nullable=False, )
+    state: Mapped[str] = mapped_column( String(20), default="unread", nullable=False, )
 
     # User có ghim notification lên đầu danh sách hay không.
     is_pinned: Mapped[bool] = mapped_column( Boolean, default=False, nullable=False, )
 
     # Thời điểm notification đã được đưa vào vùng dữ liệu của user.
-    #
     # Trường này thường được đặt khi:
     # - bản ghi recipient được tạo;
     # - hoặc hệ thống xác nhận notification đã sẵn sàng cho user.
-    #
     # Không nhất thiết đồng nghĩa WebSocket client đã nhận.
     delivered_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Thời điểm notification đã xuất hiện trên giao diện.
-    #
     # Ví dụ user mở dropdown thông báo và notification được render.
     seen_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
@@ -676,8 +557,6 @@ class NotificationRecipients(Base):
     archived_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Thời điểm soft delete.
-    #
-    # Không xóa vật lý ngay để:
     # - audit;
     # - khôi phục;
     # - thống kê;
@@ -686,8 +565,7 @@ class NotificationRecipients(Base):
 
     created_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, nullable=False, )
 
-    updated_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, )
-
+    updated_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 # ============================================================
 # 3. BẢNG NOTIFICATION_DELIVERIES
@@ -695,25 +573,21 @@ class NotificationRecipients(Base):
 
 class NotificationDeliveries(Base):
     """
-    Theo dõi việc gửi notification theo từng user và từng kênh.
-
-    Một notification gửi cho một user qua hai channel sẽ tạo hai dòng.
-
+    Theo dõi việc gửi notification theo từng user và từng kênh.  
+    Một notification gửi cho một user qua hai channel sẽ tạo hai dòng.  
     Ví dụ:
-
         noti_001 + user_a + websocket
         noti_001 + user_a + in_app
 
     Nếu có:
         3 người nhận
         2 channel
-
-    thì số dòng delivery là:
-        3 × 2 = 6
+    thì số dòng delivery là: 3 × 2 = 6
 
     Bảng này trả lời các câu hỏi:
     - WebSocket đã gửi chưa?
     - Email đã gửi chưa?
+    - SMS đã gửi chưa?
     - Push bị lỗi gì?
     - Đã retry bao nhiêu lần?
     - Khi nào retry tiếp?
@@ -723,11 +597,7 @@ class NotificationDeliveries(Base):
 
     __table_args__ = (
         # Mỗi notification + recipient + channel chỉ có một dòng trạng thái.
-        #
         # Retry sẽ cập nhật attempt_count trên cùng bản ghi.
-        #
-        # Nếu cần lưu lịch sử chi tiết từng attempt,
-        # nên tạo thêm bảng notification_delivery_attempts.
         UniqueConstraint(
             "notification_id",
             "recipient_user_id",
@@ -736,7 +606,6 @@ class NotificationDeliveries(Base):
         ),
 
         # Worker dùng index này để lấy các delivery cần retry:
-        #
         # WHERE status = 'failed'
         #   AND next_retry_at <= now
         Index(
@@ -752,71 +621,43 @@ class NotificationDeliveries(Base):
             "recipient_user_id",
             "created_at",
         ),
+
+        CheckConstraint(
+            "status IN ('pending', 'queued', 'sending', 'sent', 'delivered', 'failed', 'expired', 'cancelled')",
+            name="ck_notification_deliveries_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column( Integer, primary_key=True, autoincrement=True, )
 
     # ID public của delivery.
-    #
-    # Ví dụ:
-    # delivery_11cb1be0...
+    # Ví dụ: delivery_11cb1be0...
     delivery_id: Mapped[str] = mapped_column( String(64), unique=True, index=True, nullable=False, )
 
     # ID notification chung.
-    notification_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    notification_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Tenant của delivery.
-    tenant_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    tenant_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # User nhận notification.
-    recipient_user_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    recipient_user_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Kênh gửi.
-    #
-    # Giá trị:
-    # - in_app
-    # - websocket
-    # - email
-    # - push
-    # - sms
-    #
-    # Đây là transport channel, không phải Redis stream scope.
-    channel: Mapped[str] = mapped_column( String(32), index=True, nullable=False, )
+    # Giá trị: in_app, websocket, email, push, sms, voice_call, ...
+    channel: Mapped[str] = mapped_column( String(32), nullable=False, )
 
     # Trạng thái của delivery.
-    #
-    # Luồng thường gặp:
-    #
-    # pending
-    #   ↓
-    # queued
-    #   ↓
-    # sending
-    #   ↓
-    # sent
-    #   ↓
-    # delivered
-    #
-    # Nếu lỗi:
-    # sending → failed → queued → sending
-    #
-    # Trạng thái khác:
-    # expired
-    # cancelled
-    status: Mapped[str] = mapped_column( String(20), default="pending", index=True, nullable=False, )
+    # Luồng thường gặp: pending → queued → sending → sent → delivered
+    # Nếu lỗi: sending → failed → queued → sending
+    # Trạng thái khác: expired, cancelled
+    status: Mapped[str] = mapped_column( String(20), default="pending", nullable=False, )
 
     # Nhà cung cấp hoặc cơ chế gửi.
-    #
-    # Ví dụ:
-    # - redis-stream
-    # - websocket-internal
-    # - smtp
-    # - firebase
-    # - twilio
+    # Ví dụ: redis_stream, firebase, smtp, twilio, sendgrid, ...
     provider: Mapped[Optional[str]] = mapped_column( String(100), nullable=True, )
 
     # ID message do provider trả về.
-    #
     # Ví dụ:
     # - Redis stream ID: 1781685000100-0
     # - Firebase message ID
@@ -827,23 +668,14 @@ class NotificationDeliveries(Base):
     attempt_count: Mapped[int] = mapped_column( Integer, default=0, nullable=False, )
 
     # Số lần gửi tối đa cho delivery này.
-    #
     # Đây là snapshot từ delivery policy của notification.
     max_attempts: Mapped[int] = mapped_column( Integer, default=5, nullable=False, )
 
     # Thời điểm được phép retry tiếp.
-    #
-    # Worker thường query:
-    # status = failed
-    # next_retry_at <= current_time
-    next_retry_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), index=True, nullable=True, )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Mã lỗi chuẩn hóa.
-    #
-    # Ví dụ:
-    # - REDIS_TIMEOUT
-    # - SMTP_AUTH_FAILED
-    # - PUSH_TOKEN_INVALID
+    # Ví dụ: REDIS_TIMEOUT, SMTP_AUTH_FAILED, PUSH_TOKEN_INVALID
     error_code: Mapped[Optional[str]] = mapped_column( String(100), nullable=True, )
 
     # Mô tả lỗi chi tiết để debug.
@@ -853,12 +685,10 @@ class NotificationDeliveries(Base):
     queued_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Thời điểm provider nhận yêu cầu gửi thành công.
-    #
     # Ví dụ Redis XADD thành công có thể đánh dấu sent_at.
     sent_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Thời điểm xác nhận người nhận/client đã nhận.
-    #
     # Với WebSocket, muốn chính xác cần:
     # - Notification Server xác nhận gửi;
     # hoặc
@@ -872,52 +702,39 @@ class NotificationDeliveries(Base):
 
     updated_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, )
 
-
 # ============================================================
 # 4. BẢNG NOTIFICATION_OUTBOX
 # ============================================================
 
 class NotificationOutbox(Base):
     """
-    Transactional Outbox dùng để bảo đảm event không bị mất
-    khi Redis hoặc Notification Server tạm thời lỗi.
-
-    Ví dụ luồng:
-
-        1. Role được tạo thành công.
-        2. Notification được lưu SQL Server.
-        3. Outbox được lưu SQL Server.
-        4. Redis bị down.
-        5. API vẫn có dữ liệu Outbox.
-        6. Worker retry khi Redis hồi phục.
-
-    Một event có thể được gửi vào nhiều Redis Stream.
-
-    Ví dụ event role.created:
-
-        event_id = evt_001
-
-        Outbox 1:
-            stream_scope = user
-            stream_key = stream:noti:tenant:t1:user:u1
-
-        Outbox 2:
-            stream_scope = user
-            stream_key = stream:noti:tenant:t1:user:u2
-
-        Outbox 3:
-            stream_scope = tenant
-            stream_key = stream:noti:tenant:t1:dashboard
-
-        Outbox 4:
-            stream_scope = global
-            stream_key = stream:noti:global
-
+    Transactional Outbox dùng để bảo đảm event không bị mất, khi Redis hoặc Notification Server tạm thời lỗi.  
+    Ví dụ luồng:  
+        1. Role được tạo thành công.  
+        2. Notification được lưu SQL Server.  
+        3. Outbox được lưu SQL Server.  
+        4. Redis bị down.  
+        5. API vẫn có dữ liệu Outbox.  
+        6. Worker retry khi Redis hồi phục.  
+    Một event có thể được gửi vào nhiều Redis Stream.  
+    Ví dụ event role.created:  
+        event_id = evt_001  
+        Outbox 1:  
+            stream_scope = user  
+            stream_key = stream:noti:tenant:t1:user:u1  
+        Outbox 2:  
+            stream_scope = user  
+            stream_key = stream:noti:tenant:t1:user:u2  
+        Outbox 3:  
+            stream_scope = tenant  
+            stream_key = stream:noti:tenant:t1:dashboard  
+        Outbox 4:  
+            stream_scope = global  
+            stream_key = stream:noti:global  
     Vì vậy event_id KHÔNG được unique một mình.
 
-    Cặp:
-        event_id + stream_key
-
+    Cặp:  
+        event_id + stream_key 
     mới phải duy nhất.
     """
 
@@ -925,7 +742,6 @@ class NotificationOutbox(Base):
 
     __table_args__ = (
         # Một event chỉ được tạo một Outbox cho cùng một Redis Stream.
-        #
         # Cho phép cùng event_id xuất hiện ở nhiều stream khác nhau.
         UniqueConstraint(
             "event_id",
@@ -933,115 +749,81 @@ class NotificationOutbox(Base):
             name="uq_notification_outbox_event_stream",
         ),
 
-        # Worker tìm Outbox đang chờ:
-        #
-        # WHERE status = 'pending'
-        #   AND available_at <= current_time
+        # Worker tìm Outbox đang chờ - FILTERED INDEX: chỉ chứa dòng 'pending' nên luôn nhỏ
+        # dù bảng có hàng triệu dòng 'published'. Khớp câu claim:
+        #   WHERE status = 'pending' AND available_at <= now AND attempt_count < max_attempts
+        #   ORDER BY available_at, id
         Index(
             "ix_notification_outbox_pending",
-            "status",
             "available_at",
+            "id",
+            mssql_include=["attempt_count", "max_attempts"],
+            mssql_where=text("status = 'pending'"),
         ),
 
-        # Tìm toàn bộ outbox của một notification hoặc aggregate.
-        Index(
-            "ix_notification_outbox_aggregate",
-            "aggregate_type",
-            "aggregate_id",
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'published', 'failed')",
+            name="ck_notification_outbox_status",
         ),
-
-        # Tìm outbox theo stream scope và trạng thái.
-        #
-        # Ví dụ retry riêng user stream hoặc global stream.
-        Index(
-            "ix_notification_outbox_scope_status",
-            "stream_scope",
-            "status",
+        CheckConstraint(
+            "stream_scope IN ('user', 'tenant', 'job', 'global')",
+            name="ck_notification_outbox_scope",
         ),
     )
 
     id: Mapped[int] = mapped_column( Integer, primary_key=True, autoincrement=True, )
 
     # ID public riêng của mỗi bản ghi Outbox.
-    #
     # Một event đi vào bốn stream sẽ có bốn outbox_id khác nhau.
     outbox_id: Mapped[str] = mapped_column( String(64), unique=True, index=True, nullable=False, )
 
     # ID event chung.
-    #
     # QUAN TRỌNG:
     # Không đặt unique=True ở đây.
-    #
     # Vì cùng một event có thể đi vào nhiều stream.
-    event_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    event_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Tenant sở hữu event.
-    tenant_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
+    tenant_id: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # Phạm vi Redis Stream.
-    #
-    # Giá trị:
-    # - user
-    # - tenant
-    # - job
-    # - global
-    #
+    # Giá trị: user, tenant, job, global
     # Phân biệt với NotificationDeliveries.channel:
-    #
-    # channel:
-    #     websocket, email, push...
-    #
-    # stream_scope:
-    #     user, tenant, job, global.
-    stream_scope: Mapped[str] = mapped_column( String(20), index=True, nullable=False, )
+    # channel: websocket, email, push...
+    stream_scope: Mapped[str] = mapped_column( String(20), nullable=False, )
 
     # Tenant đích của stream.
-    #
     # Bắt buộc với:
     # - user stream;
     # - tenant stream;
     # - job stream.
-    #
     # Có thể None với global stream.
     target_tenant_id: Mapped[Optional[str]] = mapped_column( String(64), nullable=True, )
 
     # User đích.
-    #
     # Chỉ có giá trị khi stream_scope = user.
     target_user_id: Mapped[Optional[str]] = mapped_column( String(64), nullable=True, )
 
     # Job đích.
-    #
     # Chỉ có giá trị khi stream_scope = job.
     target_job_id: Mapped[Optional[str]] = mapped_column( String(64), nullable=True, )
 
     # Loại aggregate tạo event.
-    #
     # Trong hệ thống notification thường dùng:
     # aggregate_type = "notification"
-    #
-    # Nhưng cũng có thể dùng:
-    # - role
-    # - job
-    # - order
+    # Nhưng cũng có thể dùng: job, file, order, role, user, ...
     aggregate_type: Mapped[str] = mapped_column( String(64), nullable=False, )
 
     # ID aggregate.
-    #
     # Nếu aggregate_type = notification:
     # aggregate_id = notification_id.
     aggregate_id: Mapped[str] = mapped_column( String(64), index=True, nullable=False, )
 
     # Loại event.
-    #
-    # Ví dụ:
-    # - role.created
-    # - job.completed
-    # - file.processing_failed
-    event_type: Mapped[str] = mapped_column( String(128), index=True, nullable=False, )
+    # Ví dụ: job.completed, role.created, file.processing_failed, user.password_changed
+    event_type: Mapped[str] = mapped_column( String(128), nullable=False, )
 
     # Redis Stream key thật.
-    #
     # Ví dụ:
     # - stream:noti:tenant:t1:user:u1
     # - stream:noti:tenant:t1:dashboard
@@ -1050,9 +832,6 @@ class NotificationOutbox(Base):
     stream_key: Mapped[str] = mapped_column( String(255), nullable=False, )
 
     # Toàn bộ NotificationEvent được serialize thành JSON.
-    #
-    # Worker không cần build lại event từ nhiều bảng.
-    #
     # Nó chỉ cần:
     # 1. đọc payload_json;
     # 2. publish XADD;
@@ -1060,21 +839,17 @@ class NotificationOutbox(Base):
     payload_json: Mapped[str] = mapped_column( UnicodeText, nullable=False, )
 
     # Trạng thái Outbox.
-    #
     # Luồng:
-    #
     # pending
     #   ↓ worker claim
     # processing
     #   ↓ publish thành công
     # published
-    #
     # Nếu lỗi:
     # processing → pending để retry
-    #
     # Nếu vượt max_attempts:
     # processing → failed
-    status: Mapped[str] = mapped_column( String(20), default="pending", index=True, nullable=False, )
+    status: Mapped[str] = mapped_column( String(20), default="pending", nullable=False, )
 
     # Số lần worker đã claim/thử publish.
     attempt_count: Mapped[int] = mapped_column( Integer, default=0, nullable=False, )
@@ -1083,37 +858,29 @@ class NotificationOutbox(Base):
     max_attempts: Mapped[int] = mapped_column( Integer, default=10, nullable=False, )
 
     # Thời điểm Outbox được phép xử lý.
-    #
     # Dùng cho:
     # - gửi trễ;
     # - exponential backoff;
     # - retry sau khi lỗi.
-    available_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, index=True, nullable=False, )
+    available_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, nullable=False, )
 
     # Thời điểm worker claim bản ghi.
-    #
     # Dùng để phát hiện bản ghi bị kẹt nếu worker crash.
     locked_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # ID worker đang xử lý.
-    #
-    # Ví dụ:
-    # noti-worker:container-01:a82cd5
+    # Ví dụ: noti-worker:container-01:a82cd5
     locked_by: Mapped[Optional[str]] = mapped_column(String(100),nullable=True,)
 
     # Redis Stream ID trả về sau XADD.
-    #
-    # Ví dụ:
-    # 1781685000100-0
+    # Ví dụ: 1781685000100-0
     published_stream_id: Mapped[Optional[str]] = mapped_column( String(100), nullable=True, )
 
     # Thời điểm publish thành công.
     published_at: Mapped[Optional[datetime]] = mapped_column( DateTime(timezone=True), nullable=True, )
 
     # Lỗi gần nhất của Outbox.
-    #
-    # Ví dụ:
-    # TimeoutError: Timeout writing to Redis
+    # Ví dụ: TimeoutError: Timeout writing to Redis
     last_error: Mapped[Optional[str]] = mapped_column( UnicodeText, nullable=True, )
 
     created_at: Mapped[datetime] = mapped_column( DateTime(timezone=True), default=utc_now, nullable=False, )
