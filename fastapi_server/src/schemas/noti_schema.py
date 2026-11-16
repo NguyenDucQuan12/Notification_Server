@@ -1,12 +1,30 @@
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import  Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from enum import StrEnum
 
 
 # ============================================================
 # ENUM
 # ============================================================
+
+class NotificationDispatchMode(StrEnum):
+    """
+    WORKER:
+        Chỉ lưu notification + outbox.
+        Worker sẽ tự động truy vấn các outbox có trạng thái "pending" và đẩy lên redis
+
+    DIRECT:
+        Lưu notification + outbox trước.
+        Sau đó thử publish ngay.
+
+        Nếu publish Redis lỗi:
+        - Không throw lỗi ra RoleController.
+        - Outbox được đưa lại pending.
+        - Worker có thể retry sau.
+    """
+    DIRECT = "direct"
+    WORKER = "worker"
 
 class NotificationChannel(StrEnum):
     """
@@ -100,6 +118,9 @@ class NotificationDeliveryStatus(StrEnum):
 
 
 class NotificationLifecycleStatus(StrEnum):
+    """
+    Trạng thái vòng đời của thông báo
+    """
     ACTIVE = "active"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
@@ -198,6 +219,12 @@ class NotificationAudience(NotificationBaseSchema):
 
     @model_validator(mode="after")
     def validate_audience(self) -> "NotificationAudience":
+        """
+        Kiểm tra tính hợp lệ của audience dựa trên type:
+        - Nếu type là user hoặc users thì user_ids không được rỗng.
+        - Nếu type là role hoặc roles thì role_ids không được rỗng.
+        - Nếu type là group hoặc groups thì group_ids không được rỗng.
+        """
         if self.type in {
             NotificationAudienceType.USER,
             NotificationAudienceType.USERS,
@@ -269,6 +296,11 @@ class NotificationAction(NotificationBaseSchema):
 
     @model_validator(mode="after")
     def validate_action(self) -> "NotificationAction":
+        """
+        Kiểm tra tính hợp lệ của action:
+        - Nếu action.type khác NONE thì target là bắt buộc.
+        - Nếu action.type là NONE thì target không được cung cấp.
+        """
         if (
             self.type != NotificationActionType.NONE
             and not self.target
@@ -297,7 +329,7 @@ class NotificationDeduplication(NotificationBaseSchema):
 
 class NotificationDeliveryPolicy(NotificationBaseSchema):
     """
-    Chính sách  
+    Chính sách gửi thông báo, ví dụ số lần retry, thời gian sống của thông báo, ...  
     Ví dụ:  
     ```
     "delivery_policy": {
@@ -340,8 +372,41 @@ class NotificationTrace(NotificationBaseSchema):
 # ============================================================
 
 class NotificationCreateCommand(NotificationBaseSchema):
+    """
+    Đây là nội dung mà client hoặc service gửi lên API để tạo thông báo.  
+    Ví dụ: một thông báo tạo role mới.
+    ```
+    {
+        "tenant_id": "company_a",
+        "notification_type": "role.created",
+        "category": "security",
+        "source": {
+            "service": "api-server",
+            "instance": "role-controller",
+            "environment": "production"
+        },
+        "actor": {
+            "type": "user",
+            "id": "admin_001",
+            "display_name": "superadmin",
+            "avatar_url": null
+        },
+        "resource": {
+            "type": "role",
+            "id": "warehouse_manager",
+            "version": 1
+        },
+        "audience": {
+            "type": "users",
+            "user_ids": [
+                "admin_001",
+                "user_001",
+                "user_002"
+            ]
+        }
+    }
+    """
     tenant_id: str = Field( min_length=1, max_length=64, )
-    # Ví dụ role.created.
     notification_type: str = Field( min_length=3, max_length=128, pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$", )      # Regex hiện tại yêu cầu ít nhất một dấu chấm: role.create
     category: str = Field( min_length=1, max_length=64, )                                                                  # Nhóm thông báo
     source: NotificationSource                                                                                             # Nguồn phát sing ra thông báo này
@@ -364,6 +429,11 @@ class NotificationCreateCommand(NotificationBaseSchema):
     # Validator chạy sau khi Pydantic đã đọc và chuyển đổi các trường
     @model_validator(mode="after")
     def validate_times(self) -> "NotificationCreateCommand":
+        """
+        Kiểm tra tính hợp lệ của available_at và expires_at:
+        - expires_at phải lớn hơn thời điểm hiện tại.
+        - available_at phải nhỏ hơn expires_at.
+        """
         now = datetime.now(timezone.utc)
         # Không cho phép tạo thông báo đã hết hạn.
         if self.expires_at and self.expires_at <= now:
@@ -385,14 +455,18 @@ class NotificationCreateCommand(NotificationBaseSchema):
 
 
 # ============================================================
-# EVENT HOÀN CHỈNH 
+# EVENT HOÀN CHỈNH
 # ============================================================
 
 class NotificationEvent(NotificationCreateCommand):
     """
     Đây là nội dung đầy đủ được lưu và publish Redis.  
     NotificationEvent kế thừa NotificationCreateCommand  
-    Bổ sung thêm các thông tin định danh, phiên bản, và mốc thời gian để sẵn sàng phát (publish) vào các hệ thống như Redis  
+    Bổ sung thêm các thông tin:
+    - định danh
+    - phiên bản
+    - mốc thời gian  
+    Và sẵn sàng phát (publish) vào các hệ thống như Redis  
     Ví dụ một thông báo hoàn chỉnh như sau:  
     ```
     {
@@ -544,20 +618,32 @@ class NotificationCreateResult(NotificationBaseSchema):
     stream_target_count: int
     created_at: datetime
 
+class NotificationSendRequest(BaseModel):
+    """
+    Body của API POST /notifications/send.
+    """
 
-# ============================================================
-# SCHEMA CẬP NHẬT TRẠNG THÁI
-# ============================================================
+    title: str = Field(min_length=1, max_length=255, examples=["Xin chào"])
+    body: str = Field(min_length=1, max_length=5000, examples=["Đây là thông báo thử nghiệm"])
 
-# class NotificationRecipientStateUpdate(
-#     NotificationBaseSchema
-# ):
-#     state: NotificationRecipientState
+    # Danh sách user_id nhận thông báo (cùng tenant). Rỗng = gửi cho chính mình.
+    target_user_ids: list[str] = Field(default_factory=list, max_length=20000)
 
+    # True = gửi cho MỌI tài khoản đang hoạt động của tenant (bỏ qua target_user_ids).
+    send_to_all_users: bool = False
 
-# class NotificationDeliveryUpdate(NotificationBaseSchema):
-#     status: NotificationDeliveryStatus
-#     provider: str | None = None
-#     provider_message_id: str | None = None
-#     error_code: str | None = None
-#     error_message: str | None = None
+    # Gửi thêm vào stream dashboard của tenant / stream global / stream của 1 job.
+    send_to_tenant_dashboard: bool = False
+    send_to_global: bool = False
+    job_id: str | None = Field(default=None, max_length=128)
+
+    severity: NotificationSeverity = NotificationSeverity.INFO
+    # Phải có dạng "a.b" (vd system.message, job.progress).
+    notification_type: str = Field(
+        default="system.message",
+        pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$",
+    )
+    data: dict[str, Any] = Field(default_factory=dict)
+
+    # direct: publish Redis ngay; worker: chỉ ghi outbox, Outbox Worker sẽ publish.
+    mode: NotificationDispatchMode = NotificationDispatchMode.DIRECT
