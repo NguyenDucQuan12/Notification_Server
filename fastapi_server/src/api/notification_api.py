@@ -5,7 +5,6 @@ Các thông báo được gửi qua Redis Stream, WebSocket, và lưu trong SQL 
 Router chỉ nhận request rồi gọi NotificationController (controllers/notification_controller.py).
 """
 from __future__ import annotations
-
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
