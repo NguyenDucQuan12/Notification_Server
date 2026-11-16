@@ -719,3 +719,20 @@ async def delete_user_auth(
         response["message"] = f"Lỗi không xác định khi xóa user_auth: {str(e)}"
 
     return response
+
+async def get_active_user_ids(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+) -> list[str]:
+    """
+    user_id của mọi tài khoản đang được phép đăng nhập trong tenant
+    (dùng khi gửi thông báo cho tất cả người dùng).
+    """
+    result = await db.execute(
+        select(UserAuth.user_id).where(
+            UserAuth.tenant_id == tenant_id,
+            UserAuth.is_login_enabled == True,  # noqa: E712 - SQLAlchemy cần ==, không dùng "is"
+        )
+    )
+    return sorted({str(u) for u in result.scalars().all() if u})

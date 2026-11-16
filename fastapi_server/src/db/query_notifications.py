@@ -3,13 +3,51 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Sequence
 from typing import Any
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.noti_schema import NotificationEvent, NotificationCreateResult
 from models.notification_model import NotificationDeliveries, NotificationOutbox, NotificationRecipients, Notifications
 from services.notification_publisher import NotificationStreamTarget, deduplicate_targets
 from utils.utils import utc_now, create_public_id, enum_value, json_dumps
+
+
+async def _bulk_insert(db: AsyncSession, rows: list[Any]) -> None:
+    """
+    INSERT hàng loạt các object ORM cùng loại, KHÔNG lấy lại khóa chính tự tăng.
+
+    db.add_all() + flush() buộc SQLAlchemy trả về `id` (OUTPUT inserted.id) cho từng dòng,
+    nên SQL Server bị giới hạn ~2.100 tham số/câu => 2.000 người nhận tạo ~70 câu INSERT (~4-5 giây).
+    Ở đây không cần `id` nên dùng "ORM bulk INSERT" (session.execute(insert(Model), [dict...])):
+    kết hợp fast_executemany của pyodbc (bật trong db/database.py) => gửi cả mảng tham số 1 lần.
+    Giá trị mặc định phía Python (default=...) của cột vẫn được áp dụng như bình thường.
+    """
+    if not rows:
+        return
+    model = type(rows[0])
+    params = [
+        {key: value for key, value in vars(row).items() if not key.startswith("_sa_")}
+        for row in rows
+    ]
+    await db.execute(insert(model), params)
+
+
+def build_stream_payload(event: NotificationEvent, *, recipient_count: int) -> dict[str, Any]:
+    """
+    Payload được lưu vào notification_outbox.payload_json và publish vào Redis Stream.
+
+    KHÔNG đưa danh sách người nhận (audience.user_ids / exclude_user_ids / role_ids) vào payload:
+    - Kích thước: payload được sao chép vào MỖI dòng outbox và MỖI stream đích.
+      Gửi cho 2.000 user, audience.user_ids ~70KB x 2.000 bản sao ~= 140MB (SQL + Redis).
+    - Bảo mật: user A không được biết user B, C... cũng nhận thông báo này.
+    Danh sách người nhận đầy đủ vẫn nằm trong bảng notification_recipients.
+    """
+    payload = event.model_dump(mode="json")
+    payload["audience"] = {
+        "type": payload.get("audience", {}).get("type"),
+        "recipient_count": recipient_count,
+    }
+    return payload
 
 
 async def add_notification(
@@ -461,12 +499,10 @@ async def add_notification_event_to_session(
                 )
             )
 
-    # Chỉ add_all khi list có dữ liệu.
-    if recipient_rows:
-        db.add_all(recipient_rows)
-
-    if delivery_rows:
-        db.add_all(delivery_rows)
+    # Ghi dòng notifications trước (1 dòng, cần ORM), sau đó INSERT hàng loạt các bảng con.
+    await db.flush()
+    await _bulk_insert(db, recipient_rows)
+    await _bulk_insert(db, delivery_rows)
 
     # ========================================================
     # TẠO OUTBOX CHO TỪNG REDIS STREAM TARGET
@@ -486,7 +522,7 @@ async def add_notification_event_to_session(
     # - kết quả hoàn toàn giống nhau;
     # - số target càng nhiều thì chi phí càng lớn.
     event_payload_json = json_dumps(
-        event.model_dump(mode="json")
+        build_stream_payload(event, recipient_count=len(recipient_user_ids))
     )
 
     outbox_rows: list[NotificationOutbox] = []
@@ -545,8 +581,7 @@ async def add_notification_event_to_session(
 
         outbox_ids.append(outbox_id)
 
-    if outbox_rows:
-        db.add_all(outbox_rows)
+    await _bulk_insert(db, outbox_rows)
 
     # ========================================================
     #  FLUSH DỮ LIỆU

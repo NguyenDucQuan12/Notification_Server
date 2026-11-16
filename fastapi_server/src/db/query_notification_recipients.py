@@ -1,8 +1,9 @@
+"""
+Module này chứa các truy vấn cơ sở dữ liệu liên quan đến người nhận thông báo.
+Các truy vấn này được sử dụng để thêm, lấy, đếm, đánh dấu trạng thái và xóa thông báo cho người nhận.
+"""
 from __future__ import annotations
-
 from collections.abc import Iterable
-from datetime import datetime
-
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
