@@ -204,7 +204,7 @@ class RoleController:
         try:
             permissions = json.loads(permissions_json)
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -213,7 +213,7 @@ class RoleController:
                         'Ví dụ đúng: ["job:create", "job:read"]'
                     )
                 },
-            )
+            ) from e
 
         if not isinstance(permissions, list):
             raise HTTPException(
@@ -499,29 +499,21 @@ class RoleController:
         # WORKER:
         # - chỉ ghi notification DB + outbox
         # - worker publish sau
-        
+
         # Snapshot role sau cập nhật, dùng để so sánh trước và sau cập nhật
         after_role = dict(result["data"])
 
         notification_result = await create_role_updated_notification_safely(
                 tenant_id=current_user["tenant_id"],
-
                 before_role=after_role,         # Dữ liệu role trước khi cập nhật, nên thay bằng cách là truy vấn data trước khi update
                 after_role=after_role,          # Dữ liệu role sau khi cập nhật, dùng để so sánh sự khác nhau trước và sau cập nhật
-
                 target_user_id=None,            # Thêm id của 1 user cụ thể nếu muốn họ nhận thông báo này (Ngoại trừ các Admin đã nhận thông báo thì muốn thêm người này)
-
                 current_user=current_user,      # Người dùng đang thao tác
-
                 # Thử gửi ngay; nếu lỗi, worker retry.
                 mode=NotificationDispatchMode.DIRECT,
-
-                # False:
-                # admin nghe noti qua tenant dashboard.
-                #
-                # True:
-                # mỗi admin còn nhận user stream cá nhân.
-                send_to_admin_personal_streams=False,
+                # False: admin nghe noti qua tenant dashboard.
+                # True: mỗi admin còn nhận user stream cá nhân (client nghe channel "user" sẽ nhận được).
+                send_to_admin_personal_streams=True,
                 # Có thể lấy từ header X-Idempotency-Key để ngăn một request bị retry nhiều lần tạo notification trùng
                 idempotency_key=None,
             )
