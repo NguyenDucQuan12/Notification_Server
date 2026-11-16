@@ -10,14 +10,16 @@ from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ENV_FILE = PROJECT_ROOT / "env" / ".env.api"
+ENV_DIR = PROJECT_ROOT / "env"
 
-# File này có thể không tồn tại trong Docker.
-# Khi chạy Docker, Compose đã đưa biến vào container.
-load_dotenv(
-    dotenv_path=ENV_FILE,
-    override=False,
-)
+# Thứ tự ưu tiên (cao -> thấp):
+#   1. Biến môi trường thật của hệ điều hành / Docker (docker-compose `environment:`)
+#   2. env/.env.api     (riêng API Server + Outbox Worker)
+#   3. env/.env.common  (dùng chung cho mọi service)
+# load_dotenv(override=False) KHÔNG ghi đè biến đã có, nên nạp tệp ưu tiên cao trước.
+# Các tệp này có thể không tồn tại trong Docker (Compose đã đưa biến vào container).
+for _env_file in (ENV_DIR / ".env.api", ENV_DIR / ".env.common"):
+    load_dotenv(dotenv_path=_env_file, override=False)
 
 
 def require_env(name: str) -> str:
@@ -39,6 +41,10 @@ def require_env(name: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    """
+    Cấu hình ứng dụng được nạp từ biến môi trường.
+    Các biến môi trường được nạp từ tệp .env (nếu có) hoặc từ biến môi trường thật của hệ điều hành / Docker.
+    """
     database_url: str | None
     sql_server_driver: str
     db_host: str
@@ -65,6 +71,9 @@ class Settings:
 
 @lru_cache
 def get_settings() -> Settings:
+    """
+    Lấy cấu hình từ biến môi trường và trả về một đối tượng Settings.
+    """
     return Settings(
         database_url=os.getenv("DATABASE_URL"),
         sql_server_driver=require_env("SQL_SERVER_DRIVER"),
