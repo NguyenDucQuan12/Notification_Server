@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from urllib.parse import quote_plus
+from concurrent.futures import ThreadPoolExecutor
 
-from dotenv import load_dotenv
+from urllib.parse import quote_plus
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-
 from config.config import settings
 
 class Base(DeclarativeBase):
@@ -16,14 +17,12 @@ class Base(DeclarativeBase):
     Tất cả bảng ORM như Users, Roles, UserAuth sẽ kế thừa từ Base.
     Khi gọi Base.metadata.create_all(), SQLAlchemy sẽ tạo các bảng này.
     """
-    pass
 
 
 def build_database_url() -> str:
     """
     Tạo chuỗi kết nối SQL Server async.
     """
-    # Lấy DATABASE_URL nếu đã được khai báo trong biến môi trường, thường dùng trong môi trường production với các dịch vụ như Azure SQL.
     database_url = settings.database_url
     if database_url:
         return database_url
@@ -38,13 +37,13 @@ def build_database_url() -> str:
         # f"Encrypt={os.getenv('SQL_SERVER_ENCRYPT', 'yes')};"
         f"TrustServerCertificate={settings.trust_db_server};")
 
-    # Trả về chuỗi kết nối theo định dạng mà SQLAlchemy async cần, sử dụng quote_plus để mã hóa connection string cho URL.
+    # Trả về chuỗi kết nối theo định dạng mà SQLAlchemy async sử dụng
     return f"mssql+aioodbc:///?odbc_connect={quote_plus(connection_string)}"
 
-# Lấy chuỗi kết nối khi module được import. Điều này giúp tránh việc phải gọi build_database_url() nhiều lần khi tạo engine hoặc session.
+# Lấy chuỗi kết nối khi module được import
 DATABASE_URL = build_database_url()
 
-# Tạo Async Engine để kết nối với SQL Server. Các tham số pool_pre_ping, pool_recycle, pool_size, max_overflow giúp quản lý kết nối hiệu quả hơn.
+# Tạo Async Engine để kết nối với SQL Server
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
@@ -52,9 +51,52 @@ engine = create_async_engine(
     pool_recycle=1800,
     pool_size=int(settings.db_pool),
     max_overflow=int(settings.db_max_overflow),
+    # pyodbc gửi cả mảng tham số trong 1 lần cho executemany (INSERT/UPDATE hàng loạt)
+    # thay vì từng dòng một. Quan trọng khi 1 thông báo gửi tới hàng nghìn người.
+    fast_executemany=True,
+    # Chờ tối đa N giây để lấy connection khi pool đã hết (mặc định SQLAlchemy 30 giây).
+    pool_timeout=float(os.getenv("DB_POOL_TIMEOUT", "30")),
 )
 
-# Factory tạo session async. Mỗi request hoặc task nên sử dụng một session riêng để tránh xung đột dữ liệu. expire_on_commit=False giúp các object vẫn có thể truy cập được các field sau khi commit.
+# ------------------------------------------------------------
+# AN TOÀN KHI CHỊU TẢI
+# ------------------------------------------------------------
+# 1) LOCK_TIMEOUT: câu lệnh chờ khóa quá N ms sẽ báo lỗi (1222) thay vì chờ VÔ HẠN.
+#    Transaction lỗi sẽ rollback, outbox quay về pending/được recover => không mất thông báo,
+#    nhưng không bao giờ làm treo cả hệ thống. 0 hoặc âm = giữ mặc định của SQL Server (chờ mãi).
+DB_LOCK_TIMEOUT_MS = int(os.getenv("DB_LOCK_TIMEOUT_MS", "10000"))
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_session_options(dbapi_connection, _connection_record) -> None:
+    if DB_LOCK_TIMEOUT_MS > 0:
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET LOCK_TIMEOUT {DB_LOCK_TIMEOUT_MS}")
+        cursor.close()
+
+
+# 2) Thread pool cho aioodbc: aioodbc chạy MỌI lệnh pyodbc (execute, fetch, commit...) trong
+#    thread pool mặc định của event loop (chỉ ~min(32, số CPU + 4) thread). Nếu số connection
+#    trong pool > số thread, khi nhiều lệnh cùng chờ khóa thì các phiên đang GIỮ khóa không còn
+#    thread để chạy COMMIT => treo vĩnh viễn (SQL Server không phát hiện được vì bên chặn là client).
+#    => Số thread phải >= số connection tối đa của pool.
+DB_EXECUTOR_THREADS = int(
+    os.getenv(
+        "DB_EXECUTOR_THREADS",
+        str(int(settings.db_pool) + int(settings.db_max_overflow) + 8),
+    )
+)
+
+
+def configure_db_executor(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Gọi 1 lần khi khởi động (lifespan của API, main() của worker), trong event loop đang chạy."""
+    loop = loop or asyncio.get_running_loop()
+    loop.set_default_executor(
+        ThreadPoolExecutor(max_workers=DB_EXECUTOR_THREADS, thread_name_prefix="db")
+    )
+
+
+# Factory tạo session async. Mỗi request FastAPI sẽ có một session riêng.
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -62,7 +104,6 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
     autocommit=False,
 )
-
 
 async def get_db():
     """
@@ -79,7 +120,6 @@ async def get_db():
     async with AsyncSessionLocal() as db:
         yield db
 
-
 async def init_db() -> None:
     """
     Tạo bảng nếu chưa có.
@@ -89,7 +129,6 @@ async def init_db() -> None:
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
 
 async def close_db() -> None:
     """
