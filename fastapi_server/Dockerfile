@@ -64,5 +64,6 @@ USER app
 EXPOSE 8000
 
 # ========= 8) Lệnh khởi động =========
-CMD ["fastapi", "run", "src/main.py", "--host", "0.0.0.0", "--port", "8000"]
+# API_WORKERS (mặc định 1): số tiến trình uvicorn, đặt trong docker-compose `environment:`.
+CMD ["sh", "-c", "exec fastapi run src/main.py --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-1}"]
 # CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
