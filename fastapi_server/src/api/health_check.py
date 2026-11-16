@@ -1,10 +1,12 @@
+"""
+Module này chứa các endpoint kiểm tra sức khỏe của service.
+"""
+from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from db.database import engine
-from pathlib import Path
 from sqlalchemy import text
 from config.config import settings
-
+from db.database import engine
 from services.redis_client import get_redis_fast
 
 
@@ -46,7 +48,7 @@ async def readyz():
     - 200 nếu tất cả ok
     - 503 nếu một trong các check lỗi
     """
-
+    # List các kết quả kiểm tra
     checks: dict[str, str] = {}
 
     # Kiểm tra DB
@@ -60,40 +62,32 @@ async def readyz():
         else:
             checks["db"] = f"DB trả về kết quả không xác định: {value}"
 
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-except
         checks["db"] = f"Lỗi kết nối DB: {type(exc).__name__}: {str(exc)}"
 
     # Kiểm tra Redis
     try:
         redis_client = get_redis_fast()
-
         pong = await redis_client.ping()
 
         if pong is True or pong == "PONG":
             checks["redis"] = "ok"
         else:
-            checks["redis"] = f"Lỗi kết nối Redis: unexpected ping result {pong}"
+            checks["redis"] = f"Lỗi kết nối Redis, ping trả về: {pong}"
 
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-except
         checks["redis"] = f"Lỗi Redis: {type(exc).__name__}: {str(exc)}"
 
     # Kiểm tra quyền ghi thư mục upload
     try:
         upload_dir = Path(UPLOAD_DIRECTORY)
         upload_dir.mkdir(parents=True, exist_ok=True)
-
         probe_file = upload_dir / ".readyz.tmp"
-
-        probe_file.write_text(
-            "ok",
-            encoding="utf-8",
-        )
-
+        probe_file.write_text("ok", encoding="utf-8")
         probe_file.unlink(missing_ok=True)
-
         checks["fs"] = "ok"
 
-    except Exception as exc:
+    except Exception as exc: # pylint: disable=broad-except
         checks["fs"] = f"Lỗi khi kiểm tra thư mục: {type(exc).__name__}: {str(exc)}"
 
     # Tổng hợp kết quả
