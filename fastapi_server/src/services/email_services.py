@@ -1,3 +1,6 @@
+"""
+Dịch vụ gửi email (Email Service)
+"""
 import smtplib
 from smtplib import SMTPException
 import threading
@@ -33,7 +36,8 @@ class InternalEmailSender():
     Gửi email tới người dùng  
     Khi sử dụng dịch vụ Internal thì cần có địa chỉ host SMTP và PORT email service của công ty
     """
-    def __init__(self, email = EMAIL_SENDER, password = PASSWORD_EMAIL_SENDER, smtp_host = SMTP_HOST, smtp_port = SMTP_PORT, email_service = EMAIL_SERVICES ):
+    def __init__(self, email = EMAIL_SENDER, password = PASSWORD_EMAIL_SENDER,
+                 smtp_host = SMTP_HOST, smtp_port = SMTP_PORT, email_service = EMAIL_SERVICES ):
         """
         Phân loại dịch vụ mail và mở cổng tương ứng
         """
@@ -81,13 +85,13 @@ class InternalEmailSender():
 
             else:
                 # Ghi log lại nếu dịch vụ không hợp lệ
-                system_logger.error(f"Chương trình chỉ hỗ trợ Gmail, Outlook hoặc Internal, vui lòng chọn đúng dịch vụ. Không sử dụng {self.email_service}")
+                system_logger.error("Chương trình chỉ hỗ trợ Gmail, Outlook hoặc Internal, vui lòng chọn đúng dịch vụ. Không sử dụng %s", self.email_service)
                 return None
-            
+
             return server
 
         except SMTPException as e:
-            system_logger.error(f"Lỗi khi đăng nhập email: {str(e)}")
+            system_logger.error("Lỗi khi đăng nhập email: %s", str(e))
             return None
 
     def is_valid_email(self, email):
@@ -96,7 +100,7 @@ class InternalEmailSender():
         """
         regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
         return re.match(regex, email) is not None
-    
+
     def attach_file(self, msg, attachment_path):
         """
         Đính kèm tệp vào email.
@@ -108,13 +112,13 @@ class InternalEmailSender():
         filename = os.path.basename(attachment_path)
 
         if not os.path.exists(attachment_path):
-            system_logger.warning(f"Không tìm thấy tệp tin: {attachment_path}. Gửi mail mà không đính kèm tệp tin.")
+            system_logger.warning("Không tìm thấy tệp tin %s. Gửi mail mà không đính kèm tệp tin.", attachment_path)
             return
-        
+
         # Kiểm tra dung lượng tệp (chuyển sang MB và so với giới hạn 200MB)
         file_size_mb = os.path.getsize(attachment_path) / (1024 * 1024)
         if file_size_mb > MAX_ATTACHMENT_SIZE_MB:
-            system_logger.warning(f"Tệp đính kèm {filename} có dung lượng {file_size_mb:.2f}MB, vượt quá giới hạn {MAX_ATTACHMENT_SIZE_MB}MB. Không gửi tệp này.")
+            system_logger.warning("Tệp đính kèm %s có dung lượng %s MB, vượt quá giới hạn %s MB. Không gửi tệp này.", filename, file_size_mb, MAX_ATTACHMENT_SIZE_MB)
             return
 
         try:
@@ -125,7 +129,7 @@ class InternalEmailSender():
                 encoders.encode_base64(part)
                 part.add_header('Content-Disposition', f'attachment; filename={filename}')
                 msg.attach(part)
-        except Exception as e:
+        except Exception as e: # pylint: disable=broad-except
             system_logger.error("Không thể đính kèm tệp tin: %s. Lỗi xuất hiện: %s. Gửi mail mà không đính kèm tệp tin", attachment_path, e)
 
     def send_email(self, to_email, subject, body, signature='', attachment_path=None, cc_email=None):
@@ -185,13 +189,13 @@ class InternalEmailSender():
 
                     # Trả về thành công
                     success_send_email = True
-                    system_logger.info(f"Email gửi thành công tới {to_email}.")
+                    system_logger.info("Email gửi thành công tới %s.", to_email)
 
                 else:
                     raise ValueError("Không thể kết nối tới máy chủ mail")
 
-            except Exception as e:
-                system_logger.error(f"Gửi email tới {to_email} thất bại lần {retry_attempts + 1}. Lỗi: {e}")
+            except Exception as e: # pylint: disable=broad-except
+                system_logger.error("Gửi email tới %s thất bại lần %d. Lỗi: %s", to_email, retry_attempts + 1, str(e))
                 retry_attempts += 1
                 time.sleep(5)  # Delay trước khi thử lại
 
@@ -210,7 +214,7 @@ class InternalEmailSender():
                 callback(to_email, success)
 
             return success
-        
+
         # Gọi hàm gửi mail trong thread
         email_thread = threading.Thread(target=run)
         email_thread.start()
@@ -234,12 +238,10 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email=to_email, subject=subject_mail, 
-                                                body=body_alert, signature=self.signature_email, 
-                                                attachment_path=attachment_path, callback=callback)
-    
-        return success_send_email
-    
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_alert, signature=self.signature_email,
+                              attachment_path=attachment_path, callback=callback)
+
     def send_mail_for_redis_crash(self, to_email, reason, attachment_path = None, callback = None):
         """
         Gửi mail thông báo về việc không thể kết nối tới redis
@@ -249,7 +251,7 @@ class InternalEmailSender():
         :param attachment_path: Description
         :param callback: Description
         """
-        subject_mail = f"Không thể kết nối tới Redis"
+        subject_mail = "Không thể kết nối tới Redis"
         body_alert = f"""
         <html>
             <body style="font-family: Arial, sans-serif; color: #333;">
@@ -262,11 +264,9 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email = to_email, subject = subject_mail, 
-                                             body= body_alert, signature = self.signature_email, 
-                                             attachment_path = attachment_path, callback= callback)
-        
-        return success_send_email
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_alert, signature=self.signature_email,
+                              attachment_path=attachment_path, callback=callback)
 
     def send_email_for_new_account(self, to_email, name, website_name, attachment_path=None, callback=None):
         """
@@ -286,11 +286,9 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email = to_email, subject = subject_mail, 
-                                             body= body_account_creation, signature = self.signature_email, 
-                                             attachment_path = attachment_path, callback= callback)
-        
-        return success_send_email
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_account_creation, signature=self.signature_email,
+                              attachment_path=attachment_path, callback=callback)
 
     def send_mail_for_activate_account(self, to_email, name, website_name, username, email, attachment_path=None, callback=None):
         """
@@ -316,11 +314,9 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email=to_email, subject=subject_mail, 
-                                                body=body_account_creation, signature=self.signature_email, 
-                                                attachment_path=attachment_path, callback=callback)
-    
-        return success_send_email
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_account_creation, signature=self.signature_email,
+                              attachment_path=attachment_path, callback=callback)
 
     def send_email_for_password_reset(self, to_email, name, website_name, OTP, attachment_path=None, callback= None):
         """
@@ -343,10 +339,9 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email, subject = subject_mail,
-                                              body = body_password_reset, signature = self.signature_email,
-                                                attachment_path = attachment_path, callback= callback)
-        return success_send_email
+        self.send_email_async(to_email, subject=subject_mail,
+                              body=body_password_reset, signature=self.signature_email,
+                              attachment_path=attachment_path, callback=callback)
 
     def send_mail_on_startup(self, to_email, website_name, timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")):
         """
@@ -366,12 +361,9 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email=to_email, subject=subject_mail, 
-                                                    body=body_startup_notification, signature=self.signature_email)
-        
-        return success_send_email
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_startup_notification, signature=self.signature_email)
 
-    
     def send_mail_on_shutdown(self, to_email, website_name, timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")):
         """
         Gửi email thông báo khi ứng dụng FastAPI đã dừng.
@@ -390,18 +382,13 @@ class InternalEmailSender():
         </html>
         """
         # Gửi email với nội dung và chữ ký
-        success_send_email = self.send_email_async(to_email=to_email, subject=subject_mail, 
-                                                    body=body_shutdown_notification, signature=self.signature_email)
-        
-        return success_send_email
-
+        self.send_email_async(to_email=to_email, subject=subject_mail,
+                              body=body_shutdown_notification, signature=self.signature_email)
 
 # Ví dụ sử dụng
 if __name__ == "__main__":
-
-
-    email = InternalEmailSender()
-    email.send_email_for_new_account(
+    email_services = InternalEmailSender()
+    email_services.send_email_for_new_account(
                     to_email= "nguyenducquan2001@gmail.com",
                     name= "Quân",
                     website_name= "Hệ thống TEST"
