@@ -1,3 +1,7 @@
+"""
+Dịch vụ tạo sự kiện thông báo (Notification Event)  
+Các hàm trong file này giúp tạo các sự kiện thông báo (NotificationEvent) dựa trên các hành động nghiệp vụ như tạo role, cập nhật role, hoặc gửi thông báo tùy chỉnh.
+"""
 from __future__ import annotations
 from datetime import timedelta
 from typing import Any
@@ -201,6 +205,9 @@ def build_role_created_event(
     recipient_user_ids: list[str],
     correlation_id: str | None = None,
     trace_id: str | None = None,
+    # True: người vừa tạo role không nhận thông báo trong hộp thư cá nhân.
+    # False: người tạo vẫn nhận (hữu ích khi hệ thống chỉ có 1 admin).
+    exclude_actor: bool = True,
 ) -> NotificationEvent:
     """
     Tạo event role.created.
@@ -208,6 +215,26 @@ def build_role_created_event(
     recipient_user_ids nên là danh sách admin/superuser
     đã được truy vấn trước từ bảng user_auth.
     """
+    # Lọc danh sách người nhận thực tế ngay tại đây để audience luôn nhất quán.
+    recipient_ids = sorted(
+        {
+            str(user_id).strip()
+            for user_id in recipient_user_ids
+            if user_id and str(user_id).strip()
+            and not (exclude_actor and str(user_id).strip() == actor_user_id)
+        }
+    )
+
+    # Không còn ai nhận trong hộp thư cá nhân -> audience là cả tenant
+    # (thông báo vẫn đi vào tenant dashboard / global stream).
+    if recipient_ids:
+        audience = NotificationAudience(
+            type=NotificationAudienceType.USERS,
+            user_ids=recipient_ids,
+            exclude_user_ids=[],
+        )
+    else:
+        audience = NotificationAudience(type=NotificationAudienceType.TENANT)
     # Tạo nội dung chung cho thông báo
     command = NotificationCreateCommand(
         tenant_id=tenant_id,                                # Mã tenant
@@ -232,11 +259,7 @@ def build_role_created_event(
             version=1,
         ),
 
-        audience=NotificationAudience(                      # Đối tượng nhận thông báo này
-            type=NotificationAudienceType.USERS,
-            user_ids=recipient_user_ids,                    # Nên để dạng danh sách, và có thể loại trừ gửi thông báo cho chính người vừa tạo
-            exclude_user_ids=[actor_user_id],
-        ),
+        audience=audience,                                  # Đối tượng nhận thông báo này (đã lọc ở trên)
 
         channels=[                                          # Kênh thông báo
             NotificationChannel.IN_APP,
@@ -531,4 +554,85 @@ def build_role_updated_event(
     # - available_at
     # - expires_at
     return build_notification_event(command)
-    
+
+
+def build_custom_notification_event(
+    *,
+    tenant_id: str,
+    title: str,
+    body: str,
+    recipient_user_ids: list[str],
+    actor_user_id: str,
+    actor_username: str | None,
+    notification_type: str = "system.message",
+    category: str = "system",
+    severity: NotificationSeverity = NotificationSeverity.INFO,
+    priority: NotificationPriority = NotificationPriority.NORMAL,
+    data: dict[str, Any] | None = None,
+    job_id: str | None = None,
+    correlation_id: str | None = None,
+    trace_id: str | None = None,
+) -> NotificationEvent:
+    """
+    Tạo một thông báo tùy chỉnh (title/body do người gọi truyền vào).
+
+    Dùng cho API POST /notifications/send: kiểm thử toàn bộ luồng
+    API -> SQL Server (outbox) -> Redis Stream -> Notification Server -> Client
+    mà không cần nghiệp vụ cụ thể (tạo role, upload file...).
+    """
+    recipient_ids = sorted(
+        {str(u).strip() for u in recipient_user_ids if u and str(u).strip()}
+    )
+
+    audience = (
+        NotificationAudience(type=NotificationAudienceType.USERS, user_ids=recipient_ids)
+        if recipient_ids
+        else NotificationAudience(type=NotificationAudienceType.TENANT)
+    )
+
+    command = NotificationCreateCommand(
+        tenant_id=tenant_id,
+        notification_type=notification_type,
+        category=category,
+        source=NotificationSource(
+            service="api-server",
+            instance="notification-api",
+            environment="test",
+        ),
+        actor=NotificationActor(
+            type=NotificationActorType.USER,
+            id=actor_user_id,
+            display_name=actor_username,
+        ),
+        resource=(
+            NotificationResource(type="job", id=job_id) if job_id else None
+        ),
+        audience=audience,
+        channels=[
+            NotificationChannel.IN_APP,
+            NotificationChannel.WEBSOCKET,
+        ],
+        content=NotificationContent(
+            template_key=notification_type,
+            locale="vi-VN",
+            title=title,
+            body=body,
+            short_body=body[:500],
+        ),
+        data=dict(data or {}, **({"job_id": job_id} if job_id else {})),
+        priority=priority,
+        severity=severity,
+        delivery_policy=NotificationDeliveryPolicy(
+            ttl_seconds=24 * 60 * 60,
+            max_attempts=5,
+            retry_delay_seconds=10,
+            require_ack=False,
+        ),
+        trace=NotificationTrace(
+            correlation_id=correlation_id,
+            trace_id=trace_id,
+            causation_id="notification_api:send",
+        ),
+    )
+
+    return build_notification_event(command)
