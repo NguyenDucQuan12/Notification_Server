@@ -26,6 +26,7 @@ router = APIRouter(
 async def api_create_ws_ticket(
     channel: Literal["user", "tenant_dashboard", "job", "global"] = Query(...),
     job_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
     current_user: dict[str, Any] = Depends(required_token_user),
 ) -> Any:
     """
@@ -46,6 +47,7 @@ async def api_create_ws_ticket(
         channel=channel,
         job_id=job_id,
         current_user=current_user,
+        db=db,
     )
 
 @router.post("/send")
