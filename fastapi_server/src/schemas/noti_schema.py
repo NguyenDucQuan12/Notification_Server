@@ -1,3 +1,37 @@
+"""
+Schema định nghĩa các thông báo (notification) và sự kiện (event) trong hệ thống.
+Một NotificationEvent hoàn chỉnh bao gồm các thành phần:
+{
+    "schema_version": "1.0",                # Phiên bản schema của thông báo
+    "event_id": "evt_...",                  # ID duy nhất của sự kiện thông báo
+    "notification_id": "noti_...",          # ID duy nhất của thông báo dùng để lưu trong cơ sở dữ liệu và liên kết các bảng khác
+    "created_at": "2026-06-17T08:30:00Z",   # Thời điểm tạo thông báo
+
+    "tenant_id": "company_a",               # ID của tenant (công ty) mà thông báo này thuộc về
+    "notification_type": "role.created",    # Loại sự kiện thông báo, ví dụ role.created, user.deleted, order.shipped, ...
+    "category": "security",                 # Nhóm thông báo, ví dụ security, order, system, ...
+
+    "source": {},                           # Nguồn phát sinh thông báo, ví dụ service, instance, environment, process_id, ... được khai báo tại NotificationSource.
+    "actor": {},                            # Đối tượng thực hiện hành động, ví dụ user, system, service, ... được khai báo tại NotificationActor.
+    "resource": {},                         # Đối tượng bị tác động khi tạo thông báo, ví dụ role, user, order, ... được khai báo tại NotificationResource.
+    "audience": {},                         # Đối tượng nhận thông báo, ví dụ user, users, role, roles, tenant, global, ... được khai báo tại NotificationAudience.
+    "channels": [],                         # Danh sách các kênh gửi thông báo, ví dụ in_app, websocket, email, push, sms, ... được khai báo tại NotificationChannel.
+
+    "content": {},                          # Nội dung thông báo, bao gồm template_key, template_version, locale, title, body, short_body, image_url, variables, ... được khai báo tại NotificationContent.
+    "action": {},                           # Hành động diễn ra khi click vào thông báo này, ví dụ navigate, open_url, open_modal, download_file, call_api, ... được khai báo tại NotificationAction.
+    "data": {},                             # Dữ liệu bổ sung, có thể chứa bất kỳ thông tin nào mà người gửi muốn đính kèm với thông báo.
+
+    "priority": "normal",                   # Mức độ ưu tiên khi gửi thông báo, ví dụ low, normal, high, urgent, ... được khai báo tại NotificationPriority.
+    "severity": "success",                  # Mức độ ưu tiên của nội dung thông báo, ví dụ info, success, warning, error, critical, ... được khai báo tại NotificationSeverity.
+    "deduplication": {},                    # Thông tin giúp ngăn nhiều service hoặc nhiều lần retry tạo ra cùng một thông báo trong thời gian ngắn, được khai báo tại NotificationDeduplication.
+    "delivery_policy": {},                  # Chính sách gửi thông báo, ví dụ số lần retry, thời gian sống của thông báo, ... được khai báo tại NotificationDeliveryPolicy.
+    "trace": {},                            # Thông tin theo dõi request, ví dụ correlation_id, trace_id, causation_id, ... được khai báo tại NotificationTrace.
+
+"status": "active",                         # Trạng thái vòng đời của thông báo, ví dụ active, cancelled, expired, ... được khai báo tại NotificationLifecycleStatus.
+    "available_at": "2026-06-17T08:30:00Z", # Thời điểm thông báo có thể được gửi đi, nếu không có thì mặc định là thời điểm tạo thông báo.
+    "expires_at": "2026-06-24T08:30:00Z"    # Thời điểm thông báo hết hạn, nếu không có thì mặc định là 7 ngày kể từ thời điểm tạo thông báo.
+}
+"""
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import  Any, Literal
@@ -7,7 +41,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # ============================================================
 # ENUM
 # ============================================================
-
 class NotificationDispatchMode(StrEnum):
     """
     WORKER:
@@ -36,7 +69,6 @@ class NotificationChannel(StrEnum):
     PUSH = "push"
     SMS = "sms"
 
-
 class NotificationPriority(StrEnum):
     """
     Mức độ ưu tiên thông báo
@@ -45,7 +77,6 @@ class NotificationPriority(StrEnum):
     NORMAL = "normal"
     HIGH = "high"
     URGENT = "urgent"
-
 
 class NotificationSeverity(StrEnum):
     """
@@ -57,19 +88,16 @@ class NotificationSeverity(StrEnum):
     ERROR = "error"
     CRITICAL = "critical"
 
-
 class NotificationAudienceType(StrEnum):
     """
-    Mức độ nhận thông báo  
-    chỉ một user nhất định hay nhiều users, ...  
+    Đối tượng nhận thông báo, có thể là một user, nhiều users, một role, nhiều roles, một tenant hay toàn bộ hệ thống (global).
     """
-    USER = "user"
-    USERS = "users"
-    ROLE = "role"
-    ROLES = "roles"
-    TENANT = "tenant"
-    GLOBAL = "global"
-
+    USER = "user"       # Một user duy nhất
+    USERS = "users"     # Nhiều user, danh sách user_ids
+    ROLE = "role"       # Những người thuộc role này
+    ROLES = "roles"     # Những người thuộc các role này
+    TENANT = "tenant"   # Tất cả user trong tenant
+    GLOBAL = "global"   # Tất cả user trong toàn bộ hệ thống
 
 class NotificationActorType(StrEnum):
     """
@@ -79,18 +107,16 @@ class NotificationActorType(StrEnum):
     SYSTEM = "system"
     SERVICE = "service"
 
-
 class NotificationActionType(StrEnum):
     """
     Hành động diễn ra khi click vào thông báo này
     """
-    NONE = "none"
-    NAVIGATE = "navigate"
-    OPEN_URL = "open_url"
-    OPEN_MODAL = "open_modal"
-    DOWNLOAD_FILE = "download_file"
-    CALL_API = "call_api"
-
+    NONE = "none"                   # Không có hành động gì, chỉ hiển thị thông báo
+    NAVIGATE = "navigate"           # Điều hướng tới một trang trong app, ví dụ /orders/1234
+    OPEN_URL = "open_url"           # Mở một URL trong trình duyệt, ví dụ https://example.com/orders/1234
+    OPEN_MODAL = "open_modal"       # Mở một modal, ví dụ để xem chi tiết đơn hàng
+    DOWNLOAD_FILE = "download_file" # Tải xuống một tệp tin, ví dụ file PDF của đơn hàng
+    CALL_API = "call_api"           # Gọi một API, ví dụ để cập nhật trạng thái đơn hàng
 
 class NotificationRecipientState(StrEnum):
     """
@@ -102,20 +128,18 @@ class NotificationRecipientState(StrEnum):
     ARCHIVED = "archived"
     DELETED = "deleted"
 
-
 class NotificationDeliveryStatus(StrEnum):
     """
     Trạng thái của thông báo khi gửi tới người đọc
     """
-    PENDING = "pending"
-    QUEUED = "queued"
-    SENDING = "sending"
-    SENT = "sent"
-    DELIVERED = "delivered"
-    FAILED = "failed"
-    EXPIRED = "expired"
-    CANCELLED = "cancelled"
-
+    PENDING = "pending"         # Chưa gửi, đang chờ worker gửi
+    QUEUED = "queued"           # Đã gửi vào Redis Stream, đang chờ Notification Server đọc và đẩy tới client
+    SENDING = "sending"         # Đang gửi tới client, chưa nhận được ACK (Acknowledgement: là client đã nhận được thông báo)
+    SENT = "sent"               # Đã gửi tới client, đã nhận được ACK
+    DELIVERED = "delivered"     # Đã gửi tới client, đã nhận được ACK, và client đã hiển thị thông báo
+    FAILED = "failed"           # Gửi tới client thất bại, có thể do client offline, hoặc lỗi mạng, hoặc lỗi server
+    EXPIRED = "expired"         # Thông báo đã hết hạn, không còn giá trị, không gửi tới client nữa
+    CANCELLED = "cancelled"     # Thông báo đã bị hủy, không còn giá trị, không gửi tới client nữa
 
 class NotificationLifecycleStatus(StrEnum):
     """
@@ -125,11 +149,9 @@ class NotificationLifecycleStatus(StrEnum):
     CANCELLED = "cancelled"
     EXPIRED = "expired"
 
-
 # ============================================================
 # BASE SCHEMA
 # ============================================================
-
 class NotificationBaseSchema(BaseModel):
     """
     Không cho phép client hoặc service gửi thêm trường không khai báo.  
@@ -141,11 +163,9 @@ class NotificationBaseSchema(BaseModel):
         from_attributes=True,
     )
 
-
 # ============================================================
 # THÀNH PHẦN CỦA EVENT
 # ============================================================
-
 class NotificationSource(NotificationBaseSchema):
     """
     Nguồn phát sinh thông báo  
@@ -162,7 +182,6 @@ class NotificationSource(NotificationBaseSchema):
     instance: str | None = Field( default=None, max_length=100, )
     environment: str = Field(default="production",max_length=32,)
 
-
 class NotificationActor(NotificationBaseSchema):
     """
     Đối tượng thực hiện hành động  
@@ -171,14 +190,13 @@ class NotificationActor(NotificationBaseSchema):
         "type": "user",
         "id": "admin_01",
         "display_name": "Nguyễn Văn A"
-        }
+    }
     ```
     """
     type: NotificationActorType
     id: str = Field( min_length=1, max_length=64, )
     display_name: str | None = Field( default=None, max_length=255, )
     avatar_url: str | None = Field(default=None,max_length=2048,)
-
 
 class NotificationResource(NotificationBaseSchema):
     """
@@ -189,13 +207,12 @@ class NotificationResource(NotificationBaseSchema):
         "type": "role",
         "id": "warehouse_manager",
         "version": 1
-        }
+    }
     ```
     """
     type: str = Field( min_length=1, max_length=64, )
     id: str = Field( min_length=1, max_length=128, )
     version: int | None = Field( default=None, ge=1, )
-
 
 class NotificationAudience(NotificationBaseSchema):
     """
@@ -212,7 +229,6 @@ class NotificationAudience(NotificationBaseSchema):
     Nên loại người tạo thông báo ra, không cần gửi thông báo cho chính họ
     """
     type: NotificationAudienceType
-
     user_ids: list[str] = Field(default_factory=list)
     role_ids: list[str] = Field(default_factory=list)
     exclude_user_ids: list[str] = Field(default_factory=list)
@@ -225,26 +241,15 @@ class NotificationAudience(NotificationBaseSchema):
         - Nếu type là role hoặc roles thì role_ids không được rỗng.
         - Nếu type là group hoặc groups thì group_ids không được rỗng.
         """
-        if self.type in {
-            NotificationAudienceType.USER,
-            NotificationAudienceType.USERS,
-        }:
+        if self.type in {NotificationAudienceType.USER, NotificationAudienceType.USERS}:
             if not self.user_ids:
-                raise ValueError(
-                    "user_ids là bắt buộc khi audience.type là user hoặc users"
-                )
+                raise ValueError("Không được rỗng user_ids khi đối tượng nhận thông báo là người dùng hoặc nhiều người dùng")
 
-        if self.type in {
-            NotificationAudienceType.ROLE,
-            NotificationAudienceType.ROLES,
-        }:
+        if self.type in {NotificationAudienceType.ROLE, NotificationAudienceType.ROLES}:
             if not self.role_ids:
-                raise ValueError(
-                    "role_ids là bắt buộc khi audience.type là role hoặc roles"
-                )
+                raise ValueError("Danh sách role_ids không được rỗng khi đối tượng nhận thông báo là role hoặc nhiều role")
 
         return self
-
 
 class NotificationContent(NotificationBaseSchema):
     """
@@ -273,7 +278,6 @@ class NotificationContent(NotificationBaseSchema):
     image_url: str | None = Field( default=None, max_length=2048, )
     variables: dict[str, Any] = Field(default_factory=dict,)
 
-
 class NotificationAction(NotificationBaseSchema):
     """
     Hành động cho thông báo này  
@@ -301,16 +305,13 @@ class NotificationAction(NotificationBaseSchema):
         - Nếu action.type khác NONE thì target là bắt buộc.
         - Nếu action.type là NONE thì target không được cung cấp.
         """
-        if (
-            self.type != NotificationActionType.NONE
-            and not self.target
-        ):
-            raise ValueError(
-                "target là bắt buộc khi action.type không phải none"
-            )
+        if (self.type != NotificationActionType.NONE and not self.target):
+            raise ValueError("Khi hành động cho thông báo khác NONE thì target là bắt buộc")
+
+        if (self.type == NotificationActionType.NONE and self.target):
+            raise ValueError("Khi hành động cho thông báo là NONE thì target không được cung cấp")
 
         return self
-
 
 class NotificationDeduplication(NotificationBaseSchema):
     """
@@ -323,9 +324,8 @@ class NotificationDeduplication(NotificationBaseSchema):
         }
     ```
     """
-    key: str = Field( min_length=1, max_length=255, )
-    window_seconds: int = Field( default=300, ge=1, le=86400, )
-
+    key: str = Field( min_length=1, max_length=255, )               # Khóa duy nhất để xác định thông báo trùng lặp, ví dụ order:9988:delivery_started
+    window_seconds: int = Field( default=300, ge=1, le=86400, )     # Thời gian (tính bằng giây) mà thông báo trùng lặp sẽ bị bỏ qua, ví dụ 300 giây = 5 phút
 
 class NotificationDeliveryPolicy(NotificationBaseSchema):
     """
@@ -349,10 +349,9 @@ class NotificationDeliveryPolicy(NotificationBaseSchema):
     retry_delay_seconds: int = Field(default=10,ge=0,le=3600,)
     require_ack: bool = False
 
-
 class NotificationTrace(NotificationBaseSchema):
     """
-    Tác vụ nào dẫn đến event này  
+    Thông tin theo dõi request, ví dụ correlation_id, trace_id, causation_id, ...    
     Ví dụ:  
     ```
     "trace": {
@@ -366,45 +365,12 @@ class NotificationTrace(NotificationBaseSchema):
     trace_id: str | None = Field( default=None, max_length=128, )
     causation_id: str | None = Field(default=None,max_length=128,)
 
-
 # ============================================================
 # COMMAND TẠO THÔNG BÁO
 # ============================================================
-
 class NotificationCreateCommand(NotificationBaseSchema):
     """
     Đây là nội dung mà client hoặc service gửi lên API để tạo thông báo.  
-    Ví dụ: một thông báo tạo role mới.
-    ```
-    {
-        "tenant_id": "company_a",
-        "notification_type": "role.created",
-        "category": "security",
-        "source": {
-            "service": "api-server",
-            "instance": "role-controller",
-            "environment": "production"
-        },
-        "actor": {
-            "type": "user",
-            "id": "admin_001",
-            "display_name": "superadmin",
-            "avatar_url": null
-        },
-        "resource": {
-            "type": "role",
-            "id": "warehouse_manager",
-            "version": 1
-        },
-        "audience": {
-            "type": "users",
-            "user_ids": [
-                "admin_001",
-                "user_001",
-                "user_002"
-            ]
-        }
-    }
     """
     tenant_id: str = Field( min_length=1, max_length=64, )
     notification_type: str = Field( min_length=3, max_length=128, pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$", )      # Regex hiện tại yêu cầu ít nhất một dấu chấm: role.create
@@ -430,34 +396,24 @@ class NotificationCreateCommand(NotificationBaseSchema):
     @model_validator(mode="after")
     def validate_times(self) -> "NotificationCreateCommand":
         """
-        Kiểm tra tính hợp lệ của available_at và expires_at:
-        - expires_at phải lớn hơn thời điểm hiện tại.
-        - available_at phải nhỏ hơn expires_at.
+        Kiểm tra tính hợp lệ của `available_at` và `expires_at`:
+        - `expires_at` phải lớn hơn thời điểm hiện tại.
+        - `available_at` phải nhỏ hơn `expires_at``.
         """
         now = datetime.now(timezone.utc)
         # Không cho phép tạo thông báo đã hết hạn.
         if self.expires_at and self.expires_at <= now:
-            raise ValueError(
-                "expires_at phải lớn hơn thời điểm hiện tại"
-            )
+            raise ValueError("Thời gian hết hạn thông báo phải lớn hơn thời điểm hiện tại")
 
         # Thông báo phải được phép gửi trước khi hết hạn.
-        if (
-            self.available_at
-            and self.expires_at
-            and self.available_at >= self.expires_at
-        ):
-            raise ValueError(
-                "available_at phải nhỏ hơn expires_at"
-            )
+        if (self.available_at and self.expires_at and self.available_at >= self.expires_at):
+            raise ValueError("Thời gian thông báo có thể gửi phải nhỏ hơn thời gian hết hạn")   
 
         return self
-
 
 # ============================================================
 # EVENT HOÀN CHỈNH
 # ============================================================
-
 class NotificationEvent(NotificationCreateCommand):
     """
     Đây là nội dung đầy đủ được lưu và publish Redis.  
@@ -465,8 +421,8 @@ class NotificationEvent(NotificationCreateCommand):
     Bổ sung thêm các thông tin:
     - định danh
     - phiên bản
-    - mốc thời gian  
-    Và sẵn sàng phát (publish) vào các hệ thống như Redis  
+    - mốc thời gian
+
     Ví dụ một thông báo hoàn chỉnh như sau:  
     ```
     {
@@ -500,13 +456,13 @@ class NotificationEvent(NotificationCreateCommand):
         "audience": {
             "type": "users",
             "user_ids": [
-            "admin_001",
-            "admin_002",
-            "admin_003"
+                "admin_001",
+                "admin_002",
+                "admin_003"
             ],
             "role_ids": [],
             "exclude_user_ids": [
-            "admin_001"
+                "admin_001"
             ]
         },
 
@@ -524,10 +480,10 @@ class NotificationEvent(NotificationCreateCommand):
             "short_body": "Role 'Warehouse Manager' vừa được tạo.",
             "image_url": null,
             "variables": {
-            "role_id": "warehouse_manager",
-            "role_name": "Warehouse Manager",
-            "actor_user_id": "admin_001",
-            "actor_username": "superadmin"
+                "role_id": "warehouse_manager",
+                "role_name": "Warehouse Manager",
+                "actor_user_id": "admin_001",
+                "actor_username": "superadmin"
             }
         },
 
@@ -543,9 +499,9 @@ class NotificationEvent(NotificationCreateCommand):
             "role_id": "warehouse_manager",
             "role_name": "Warehouse Manager",
             "permissions": [
-            "warehouse:read",
-            "warehouse:update",
-            "job:read"
+                "warehouse:read",
+                "warehouse:update",
+                "job:read"
             ]
         },
 
@@ -581,17 +537,15 @@ class NotificationEvent(NotificationCreateCommand):
     event_id: str = Field( min_length=1, max_length=64, )
     notification_id: str = Field( min_length=1, max_length=64, )
     created_at: datetime
-    # Trong event hoàn chỉnh, available_at luôn có giá trị.
     available_at: datetime
-
 
 # ============================================================
 # KẾT QUẢ TẠO THÔNG BÁO
 # ============================================================
-
 class NotificationCreateResult(NotificationBaseSchema):
     """
-    Là kết quả sau khi lưu thông báo  
+    Là kết quả sau khi lưu thông báo trong hệ thống.  
+    Đây là nội dung trả về sau khi tạo thông báo.  
     Ví dụ: 
     ```
     {
@@ -622,7 +576,6 @@ class NotificationSendRequest(BaseModel):
     """
     Body của API POST /notifications/send.
     """
-
     title: str = Field(min_length=1, max_length=255, examples=["Xin chào"])
     body: str = Field(min_length=1, max_length=5000, examples=["Đây là thông báo thử nghiệm"])
 
@@ -631,7 +584,6 @@ class NotificationSendRequest(BaseModel):
 
     # True = gửi cho MỌI tài khoản đang hoạt động của tenant (bỏ qua target_user_ids).
     send_to_all_users: bool = False
-
     # Gửi thêm vào stream dashboard của tenant / stream global / stream của 1 job.
     send_to_tenant_dashboard: bool = False
     send_to_global: bool = False
