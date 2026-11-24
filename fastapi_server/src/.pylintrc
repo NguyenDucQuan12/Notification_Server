@@ -1,0 +1,6 @@
+[MESSAGES CONTROL]
+# SQLAlchemy's `func.*` is generated dynamically; pylint falsely reports it as not callable.
+disable=not-callable
+
+[TYPECHECK]
+generated-members=sqlalchemy.func.*
