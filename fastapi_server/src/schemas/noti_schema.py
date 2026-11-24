@@ -59,6 +59,14 @@ class NotificationDispatchMode(StrEnum):
     DIRECT = "direct"
     WORKER = "worker"
 
+class NotificationStreamScope(StrEnum):
+    """
+    Xác định event sẽ được ghi vào loại Redis Stream nào.
+    """
+    USER = "user"           # Stream riêng tới người dùng
+    TENANT = "tenant"       # Stream riêng tới tổ chức, công ty
+    JOB = "job"             # Stream riêng cho 1 công việc cụ thể
+    GLOBAL = "global"       # Stream cho toàn bộ hệ thống (mục đích cho dashboard, ...)
 class NotificationChannel(StrEnum):
     """
     Các kênh gửi noti như trong app, hay realtime qua websocket, gửi email, ...
