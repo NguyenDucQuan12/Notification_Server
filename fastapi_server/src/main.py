@@ -19,7 +19,7 @@ from dotenv import load_dotenv               # pip install python-dotenv
 
 from db.database import close_db, configure_db_executor
 from log.system_log import _rotation_thread
-from api import auth_api, health_check, role_api, notification_api, bootstrap_api
+from api import auth_api, health_check, role_api, notification_api, bootstrap_api, job_api
 from middleware import logger
 from middleware.security_guard import security_guard
 from services.email_services import InternalEmailSender
@@ -83,6 +83,7 @@ app.include_router(auth_api.router)
 app.include_router(role_api.router)
 app.include_router(notification_api.router)
 app.include_router(bootstrap_api.router)
+app.include_router(job_api.router)
 # app.include_router(security_admin.router)
 
 # Tạo icon cho trang web api, nó sẽ hiển thị hình ảnh favicon ở thư mục `static/favicon.ico`
