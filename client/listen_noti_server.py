@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
+import random
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -15,11 +19,13 @@ from websockets.exceptions import ConnectionClosed
 # CẤU HÌNH
 # ============================================================
 
+# Mọi giá trị bên dưới có thể đổi bằng tham số dòng lệnh, xem: python listen_noti_server.py -h
+
 # API server: nơi có login API và API xin WebSocket ticket
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 # Notification server: nơi có WebSocket /noti/ws/...
-NOTI_WS_BASE_URL = "ws://127.0.0.1:1234/noti"
+NOTI_WS_BASE_URL = os.getenv("NOTI_WS_BASE_URL", "ws://127.0.0.1:1234/noti")
 
 # Đường dẫn login API.
 LOGIN_PATH = "/auth/login"
@@ -34,17 +40,20 @@ TICKET_PATH = "/notifications/ws-ticket"
 # }
 LOGIN_AS_FORM = True
 
-# Tài khoản test
+# Tài khoản test (đổi bằng --username/--password hoặc biến môi trường NOTI_USERNAME/NOTI_PASSWORD)
 TENANT_ID = "system"
-USERNAME = "quan"
-PASSWORD = "123456789"
+USERNAME = os.getenv("NOTI_USERNAME", "quan")
+PASSWORD = os.getenv("NOTI_PASSWORD", "123456789")
 
-# Channel muốn nghe:
-# - "user"
-# - "tenant_dashboard"
-# - "job"
-# - "global"
-CHANNEL = "global"
+# Channel muốn nghe (đổi bằng --channel):
+# - "user"             : thông báo gửi riêng cho tài khoản này  (quyền notification:subscribe)
+# - "tenant_dashboard" : mọi thông báo của tenant              (quyền notification:tenant_dashboard)
+# - "job"              : tiến trình của 1 job, cần --job        (quyền notification:job_watch)
+# - "global"           : mọi thông báo của hệ thống             (quyền notification:global_subscribe)
+CHANNEL = "user"
+
+# In toàn bộ JSON của event (--verbose)
+VERBOSE = False
 
 # Nếu CHANNEL = "job" thì cần job_id
 JOB_ID: str | None = None
@@ -178,6 +187,8 @@ def extract_ticket(response_json: dict[str, Any]) -> str:
 
 # ============================================================
 # HTTP API CLIENT
+# (Mọi lần chờ kết nối lại đều cộng thêm thời gian ngẫu nhiên - "jitter" - để khi server khởi động lại,
+#  hàng nghìn client không cùng ập vào API/Notification Server đúng một thời điểm.)
 # ============================================================
 
 async def login_and_get_token() -> str:
@@ -335,47 +346,57 @@ async def listen_notification_forever() -> None:
                         print("Nhận message không phải JSON:", raw_message)
                         continue
 
-                    event_type = event.get("type")
+                    # Message hệ thống của Notification Server dùng "type" (connected, heartbeat, pong...).
+                    # Thông báo từ API Server (qua outbox) dùng "event_type" / "notification_type".
+                    event_type = (
+                        event.get("type")
+                        or event.get("event_type")
+                        or event.get("notification_type")
+                    )
+                    now = datetime.now().strftime("%H:%M:%S")
 
-                    # In event ra màn hình
-                    print("=" * 80)
-                    print("Nhận event:")
-                    print(json.dumps(event, ensure_ascii=False, indent=2))
+                    if VERBOSE:
+                        print("=" * 80)
+                        print(json.dumps(event, ensure_ascii=False, indent=2))
 
-                    # Nếu server gửi event_id thì lưu lại.
-                    # heartbeat/connected có thể không có event_id.
-                    event_id = event.get("event_id")
+                    if event_type == "heartbeat":
+                        print(f"[{now}] heartbeat")
+                        continue
 
-                    if event_id:
-                        save_last_event_id(str(event_id))
-                        print(f"Đã lưu last_event_id={event_id}")
+                    if event_type == "connected":
+                        print(f"[{now}] KẾT NỐI THÀNH CÔNG  {json.dumps(event, ensure_ascii=False)}")
+                        continue
+
+                    if event_type == "replay_incomplete":
+                        # Server không gửi lại đủ các event đã lỡ -> nên gọi REST API để đồng bộ.
+                        print(f"[{now}] CẢNH BÁO: có thể đã mất event (reason={event.get('reason')}), cần đồng bộ lại qua API.")
+                        continue
+
+                    # "stream_id" (= event_id) là Redis Stream ID, dùng làm last_event_id khi reconnect.
+                    # ID nghiệp vụ gốc (nếu có) nằm ở "source_event_id".
+                    event_id = event.get("stream_id") or event.get("event_id")
+
+                    content = event.get("content") if isinstance(event.get("content"), dict) else {}
+                    title = content.get("title") or event.get("title") or ""
+                    body = content.get("body") or event.get("message") or ""
+
+                    print("-" * 80)
+                    print(f"[{now}] THÔNG BÁO  type={event_type}  stream_id={event_id}")
+                    if title:
+                        print(f"           {title}")
+                    if body:
+                        print(f"           {body}")
 
                     # Bạn có thể xử lý riêng từng loại event ở đây.
                     if event_type == "job.progress":
-                        print(
-                            f"Job {event.get('job_id')} progress={event.get('progress')}%"
-                        )
-
+                        print(f"           Job {event.get('job_id')} progress={event.get('progress')}%")
                     elif event_type == "job.success":
-                        print(
-                            f"Job {event.get('job_id')} đã hoàn tất. "
-                            f"result={event.get('result_object_key')}"
-                        )
-
+                        print(f"           Job {event.get('job_id')} hoàn tất, result={event.get('result_object_key')}")
                     elif event_type == "job.failed":
-                        print(
-                            f"Job {event.get('job_id')} thất bại. "
-                            f"error={event.get('error')}"
-                        )
+                        print(f"           Job {event.get('job_id')} thất bại, error={event.get('error')}")
 
-                    elif event_type == "role.created":
-                        print(
-                            f"Role mới được tạo: "
-                            f"{event.get('role_id')} - {event.get('role_name')}"
-                        )
-
-                    elif event_type == "heartbeat":
-                        print("Heartbeat từ notification server.")
+                    if event_id:
+                        save_last_event_id(str(event_id))
 
         except KeyboardInterrupt:
             print("Dừng client.")
@@ -393,27 +414,73 @@ async def listen_notification_forever() -> None:
                 print("Token có thể hết hạn hoặc không đủ quyền, đăng nhập lại...")
                 access_token = await login_and_get_token()
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(3 + random.uniform(0, 1))
 
         except ConnectionClosed as exc:
-            print(f"WebSocket bị đóng: code={exc.code}, reason={exc.reason}")
-            print("Sẽ reconnect sau 3 giây...")
-            await asyncio.sleep(3)
+            code = exc.rcvd.code if exc.rcvd else None
+            reason = exc.rcvd.reason if exc.rcvd else ""
+            print(f"WebSocket bị đóng: code={code}, reason={reason}")
+
+            # Xử lý theo bảng close code (noti_server/src/utils/close_codes.py).
+            if code in (4400, 4403):
+                print("Request sai hoặc không đủ quyền, dừng client (reconnect cũng vô ích).")
+                return
+            if code in (1013, 4429):
+                print("Server quá tải / quá nhiều kết nối, reconnect sau 15 giây...")
+                await asyncio.sleep(15 + random.uniform(0, 7))
+            elif code == 1012:
+                print("Server đang khởi động lại, reconnect sau 1 giây...")
+                await asyncio.sleep(1 + random.uniform(0, 1))
+            else:
+                print("Sẽ reconnect sau 3 giây...")
+                await asyncio.sleep(3 + random.uniform(0, 1))
 
         except OSError as exc:
             print(f"Lỗi mạng/WebSocket: {type(exc).__name__}: {exc}")
             print("Sẽ reconnect sau 3 giây...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(3 + random.uniform(0, 1))
 
         except Exception as exc:
             print(f"Lỗi không xác định: {type(exc).__name__}: {exc}")
             print("Sẽ reconnect sau 3 giây...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(3 + random.uniform(0, 1))
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Client nghe thông báo realtime từ Notification Server.")
+    parser.add_argument("--channel", default=CHANNEL,
+                        choices=["user", "tenant_dashboard", "job", "global"],
+                        help="Channel muốn nghe (mặc định: user).")
+    parser.add_argument("--job", default=None, help="job_id, bắt buộc khi --channel job.")
+    parser.add_argument("--username", default=USERNAME)
+    parser.add_argument("--password", default=PASSWORD)
+    parser.add_argument("--fresh", action="store_true",
+                        help="Bỏ last_event_id đã lưu, chỉ nhận thông báo mới từ bây giờ.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="In toàn bộ JSON của event.")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(listen_notification_forever())
+    _args = parse_args()
+
+    CHANNEL = _args.channel
+    JOB_ID = _args.job
+    USERNAME = _args.username
+    PASSWORD = _args.password
+    VERBOSE = _args.verbose
+    LAST_EVENT_FILE = Path(f".last_event_id_{CHANNEL}{'_' + JOB_ID if JOB_ID else ''}.txt")
+
+    if _args.fresh:
+        # Redis Stream ID có dạng "<mili giây>-<số thứ tự>". Lấy thời điểm hiện tại làm cursor
+        # => server chỉ gửi event phát sinh SAU lúc này. (Xóa file = đọc lại từ đầu stream "0-0".)
+        import time
+        LAST_EVENT_FILE.write_text(f"{int(time.time() * 1000)}-0", encoding="utf-8")
+
+    try:
+        asyncio.run(listen_notification_forever())
+    except KeyboardInterrupt:
+        print("Dừng client.")

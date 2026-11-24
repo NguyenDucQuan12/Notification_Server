@@ -1,0 +1,5 @@
+# Thư viện cho các chương trình client (thư mục client/)
+httpx>=0.27
+websockets>=13
+redis>=5            # chỉ cần cho load_test.py
+customtkinter>=5.2  # ứng dụng giao diện notification_app.py

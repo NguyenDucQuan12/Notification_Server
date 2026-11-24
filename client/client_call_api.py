@@ -20,19 +20,15 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 LOGIN_PATH = os.getenv("LOGIN_PATH", "/auth/login")
 CREATE_ROLE_PATH = os.getenv("CREATE_ROLE_PATH", "/roles/create")
 UPLOAD_FILE_PATH = os.getenv("UPLOAD_FILE_PATH", "/jobs/upload")
+SEND_NOTIFICATION_PATH = os.getenv("SEND_NOTIFICATION_PATH", "/notifications/send")
 
 
 # ======================
-# THÔNG TIN ĐĂNG NHẬP
+# THÔNG TIN ĐĂNG NHẬP (đổi bằng biến môi trường NOTI_USERNAME / NOTI_PASSWORD)
 # ======================
 TENANT_ID = os.getenv("TENANT_ID", "system")
-USERNAME = "quan"
-PASSWORD = os.getenv("PASSWORD", "123456789")
-
-
-print (TENANT_ID)
-print (USERNAME)
-print (PASSWORD)
+USERNAME = os.getenv("NOTI_USERNAME", "quan")
+PASSWORD = os.getenv("NOTI_PASSWORD", "123456789")
 # Nếu RoleCreate của bạn nhận permissions_json là string JSON thì để True.
 # Nếu schema nhận list trực tiếp thì đổi thành False.
 ROLE_PERMISSIONS_AS_JSON_STRING = True
@@ -111,8 +107,9 @@ async def login_and_get_token() -> str:
 
     url = f"{API_BASE_URL}{LOGIN_PATH}"
 
+    # API /auth/login nhận dữ liệu dạng FORM (OAuth2 form, để đăng nhập được từ Swagger),
+    # KHÔNG nhận JSON. Gửi json= sẽ bị 422 Unprocessable Entity.
     payload = {
-        "tenant_id": TENANT_ID,
         "username": USERNAME,
         "password": PASSWORD,
     }
@@ -120,7 +117,7 @@ async def login_and_get_token() -> str:
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             url,
-            json=payload,
+            data=payload,
         )
 
         if response.status_code != 200:
@@ -289,7 +286,7 @@ async def test_upload_file(file_path: str) -> None:
 
     access_token = await login_and_get_token()
 
-    await upload_file_api(
+    response_json = await upload_file_api(
         access_token=access_token,
         file_path=file_path,
         upload_path=UPLOAD_FILE_PATH,
@@ -301,6 +298,65 @@ async def test_upload_file(file_path: str) -> None:
         },
     )
 
+    job_id = ((response_json.get("data") or {}).get("job") or {}).get("job_id")
+    if job_id:
+        print("\nTheo dõi tiến trình job (chạy ở terminal khác):")
+        print(f"  python client\\listen_noti_server.py --channel job --job {job_id}")
+        print(f"Kết quả khi xong: GET {API_BASE_URL}/jobs/{job_id}/result")
+
+
+# ============================================================
+# GỬI THÔNG BÁO THỬ (POST /notifications/send)
+# ============================================================
+
+async def send_notification_api(args: argparse.Namespace) -> None:
+    """
+    Gửi thông báo qua luồng chuẩn: API -> SQL (outbox) -> Redis Stream -> Notification Server -> client.
+
+    Không truyền --to: gửi cho chính tài khoản đang đăng nhập (client nghe channel "user" sẽ nhận).
+    """
+
+    access_token = await login_and_get_token()
+
+    payload: dict[str, Any] = {
+        "title": args.title,
+        "body": args.body,
+        "target_user_ids": args.to or [],
+        "send_to_tenant_dashboard": args.dashboard,
+        "send_to_global": args.global_stream,
+        "job_id": args.job,
+        "severity": args.severity,
+        "notification_type": args.type,
+        "mode": args.mode,
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for i in range(1, args.count + 1):
+            body = dict(payload)
+            if args.count > 1:
+                body["title"] = f"{args.title} #{i}"
+
+            response = await client.post(
+                f"{API_BASE_URL}{SEND_NOTIFICATION_PATH}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=body,
+            )
+
+            if response.status_code != 200:
+                print_response_error(response, "Send notification failed")
+                response.raise_for_status()
+
+            data = response.json().get("data", {})
+            publish = data.get("publish") or {}
+            print(
+                f"[{i}/{args.count}] Đã gửi: notification_id={data.get('notification_id')} "
+                f"streams={data.get('stream_keys')} "
+                f"published={publish.get('published_count', '(worker)')}"
+            )
+
+            if i < args.count:
+                await asyncio.sleep(args.interval)
+
 
 # ============================================================
 # CLI
@@ -308,12 +364,37 @@ async def test_upload_file(file_path: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Test gọi API tạo role và upload file.",
+        description="Test gọi API: gửi thông báo, tạo role, upload file.",
     )
 
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
+    )
+
+    # Lệnh gửi thông báo thử
+    notify_parser = subparsers.add_parser(
+        "notify",
+        help="Gửi thông báo qua API POST /notifications/send.",
+    )
+    notify_parser.add_argument("--title", default="Thông báo thử nghiệm")
+    notify_parser.add_argument("--body", default="Xin chào từ API Server!")
+    notify_parser.add_argument("--count", type=int, default=1, help="Số thông báo gửi liên tiếp.")
+    notify_parser.add_argument("--interval", type=float, default=1.0, help="Giây giữa 2 thông báo.")
+    notify_parser.add_argument(
+        "--to", nargs="*", metavar="USER_ID",
+        help="user_id nhận (cần quyền notification:send). Bỏ trống = gửi cho chính mình.",
+    )
+    notify_parser.add_argument("--dashboard", action="store_true", help="Gửi thêm vào tenant dashboard stream.")
+    notify_parser.add_argument("--global", dest="global_stream", action="store_true", help="Gửi thêm vào global stream.")
+    notify_parser.add_argument("--job", default=None, help="Gửi thêm vào stream của job này.")
+    notify_parser.add_argument(
+        "--severity", default="info", choices=["info", "success", "warning", "error", "critical"],
+    )
+    notify_parser.add_argument("--type", default="system.message", help="notification_type, dạng a.b")
+    notify_parser.add_argument(
+        "--mode", default="direct", choices=["direct", "worker"],
+        help="direct: API publish Redis ngay; worker: chỉ ghi outbox, Outbox Worker publish.",
     )
 
     # Lệnh test tạo role
@@ -341,7 +422,10 @@ async def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "create-role":
+    if args.command == "notify":
+        await send_notification_api(args)
+
+    elif args.command == "create-role":
         await test_create_role()
 
     elif args.command == "upload-file":
@@ -353,4 +437,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-    # python client\client_call_api.py create-role
+    # Gửi 5 thông báo, mỗi cái cách nhau 2 giây, mức cảnh báo
+    # python client\client_call_api.py notify --count 5 --interval 2 --severity warning
