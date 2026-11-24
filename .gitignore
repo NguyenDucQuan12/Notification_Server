@@ -36,3 +36,6 @@ secrets/
 # *.sqlite
 # *.sqlite3
 # *.db
+
+# File lưu last_event_id của công cụ demo (noti_server/demo/noti_demo.py listen)
+.demo_last_event_*.txt
