@@ -38,26 +38,63 @@ def event_to_redis_fields(event: dict[str, Any]) -> dict[str, str]:
     return fields
 
 
-def fields_to_event(stream_id: str, fields: dict[str, str]) -> dict[str, Any]:
+def _decode_field(value: Any) -> Any:
     """
-    Chuyển fields từ Redis Stream thành event gửi về client.
+    Giải mã 1 field đọc từ Redis Stream.
 
-    stream_id:
-    - là ID Redis Stream, ví dụ 1713000000000-0
-    - client nên lưu lại event_id này để reconnect bằng last_event_id
+    Publisher (event_to_redis_fields) chỉ json.dumps cho dict/list, còn lại dùng str().
+    Vì vậy CHỈ parse JSON khi chuỗi trông giống object/array ("{...}" hoặc "[...]").
+
+    SỬA LỖI: code cũ json.loads() MỌI field, gây ra:
+    - user_id "123"   -> số 123 (đổi kiểu, client so sánh "123" === 123 bị sai).
+    - giá trị "NaN"/"Infinity" -> float nan/inf -> json.dumps sinh ra NaN,
+      không phải JSON hợp lệ, trình duyệt JSON.parse() sẽ lỗi.
+    Bây giờ các giá trị đơn (số, bool, chuỗi) được giữ NGUYÊN là chuỗi
+    đúng như publisher đã ghi.
+    """
+    if isinstance(value, bytes):  # Phòng trường hợp client Redis không bật decode_responses.
+        value = value.decode("utf-8", errors="replace")
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped[:1] in ("{", "[") and stripped[-1:] in ("}", "]"):
+            try:
+                return json.loads(stripped)
+            except ValueError:
+                return value  # JSON hỏng thì giữ nguyên chuỗi, không làm mất dữ liệu.
+    return value
+
+
+def fields_to_event(stream_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """
+    Chuyển 1 entry của Redis Stream thành message gửi về client.
+
+    Hợp đồng dữ liệu (contract) với client:
+    - "event_id"  : LUÔN là Redis Stream ID (vd "1713000000000-0").
+                    Client lưu giá trị này làm last_event_id để reconnect.
+    - "stream_id" : giống event_id, thêm vào để tên gọi rõ nghĩa hơn.
+    - "source_event_id": ID nghiệp vụ gốc (vd "evt_001") nếu publisher có ghi
+                    field "event_id" riêng.
+
+    SỬA LỖI: luồng Outbox của API server có ghi field "event_id" = ID nghiệp vụ.
+    Code cũ đặt event_id = stream_id TRƯỚC rồi mới lặp fields, nên bị ghi đè
+    thành "evt_001". Client lưu "evt_001" làm last_event_id -> server coi là
+    không hợp lệ -> replay lại TOÀN BỘ stream mỗi lần reconnect.
     """
 
-    event: dict[str, Any] = {
-        "event_id": stream_id,
-    }
+    event: dict[str, Any] = {"event_id": stream_id, "stream_id": stream_id}
 
     for key, value in fields.items():
-        # Một số field có thể là JSON string.
-        # Thử parse JSON, nếu lỗi thì giữ nguyên string.
-        try:
-            event[key] = json.loads(value)
-        except Exception:
-            event[key] = value
+        if isinstance(key, bytes):
+            key = key.decode("utf-8", errors="replace")
+
+        if key in ("event_id", "stream_id"):
+            # Không cho dữ liệu nghiệp vụ ghi đè cursor. Giữ lại ID gốc ở field khác.
+            if key == "event_id" and value != stream_id:
+                event["source_event_id"] = _decode_field(value)
+            continue
+
+        event[key] = _decode_field(value)
 
     return event
 
