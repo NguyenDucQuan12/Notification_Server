@@ -10,9 +10,7 @@ Controller có nhiệm vụ:
 Router (api/notification_api.py) chỉ nhận request rồi gọi controller.
 """
 from __future__ import annotations
-
 from typing import Any, Literal
-
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +19,7 @@ from db.query_notification_recipients import (
     mark_all_notifications_read,
     mark_notification_read,
 )
+from db.query_job_record import get_job_by_id
 from db.query_notification_views import get_user_notification_feed
 from db.query_user_auth import get_active_user_ids
 from schemas.noti_schema import NotificationSendRequest
@@ -92,6 +91,7 @@ class NotificationController:
         channel: WsChannel,
         job_id: str | None,
         current_user: dict[str, Any],
+        db: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """
         Cấp WebSocket ticket.
@@ -119,6 +119,19 @@ class NotificationController:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"message": f"Bạn không có quyền truy cập kênh {channel}"},
             )
+
+        # Channel job: người thường chỉ được theo dõi job của chính mình.
+        # Superuser / người có job:read_all được theo dõi mọi job trong tenant (kể cả job_id tự đặt khi test).
+        if channel == "job" and not NotificationController.has_permission(current_user, "job:read_all"):
+            job_result = (
+                await get_job_by_id(db, tenant_id=str(current_user["tenant_id"]), job_id=str(job_id))
+                if db is not None else {"success": None}
+            )
+            if not job_result["success"] or str(job_result["data"]["user_id"]) != str(current_user["user_id"]):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"message": f"Không tìm thấy job_id={job_id}"},
+                )
 
         # Tạo 1 ticket cho người dùng
         ticket = await create_ws_ticket(
@@ -196,32 +209,37 @@ class NotificationController:
                 detail={"message": "Bạn không có quyền gửi thông báo cho người khác / tenant dashboard / global / job"},
             )
 
-        try:
-            # Gửi thông báo qua orchestrator
-            result = await send_custom_notification(
-                tenant_id=tenant_id,
-                title=request.title,
-                body=request.body,
-                current_user=current_user,
-                target_user_ids=target_user_ids,
-                send_to_tenant_dashboard=request.send_to_tenant_dashboard,
-                send_to_global=request.send_to_global,
-                job_id=request.job_id,
-                severity=request.severity,
-                notification_type=request.notification_type,
-                data=request.data,
-                mode=request.mode,
+        # Gửi thông báo qua orchestrator.
+        result = await send_custom_notification(
+            tenant_id=tenant_id,
+            title=request.title,
+            body=request.body,
+            current_user=current_user,
+            target_user_ids=target_user_ids,
+            send_to_tenant_dashboard=request.send_to_tenant_dashboard,
+            send_to_global=request.send_to_global,
+            job_id=request.job_id,
+            severity=request.severity,
+            notification_type=request.notification_type,
+            data=request.data,
+            mode=request.mode,
+        )
+
+        if result.get("status") == "notification_failed":
+            # ValueError = dữ liệu không hợp lệ (ví dụ không có stream đích) -> 400; còn lại (DB/Redis) -> 500.
+            is_bad_request = result.get("error_type") in ("ValueError", "ValidationError")
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_400_BAD_REQUEST if is_bad_request
+                    else status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail={
+                    "message": (
+                        result.get("error_message") if is_bad_request
+                        else f"Không gửi được thông báo: {result.get('error_type')}"
+                    ),
+                },
             )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"message": str(exc)},
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 - lỗi DB/Redis
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"message": f"Không gửi được thông báo: {type(exc).__name__}"},
-            ) from exc
 
         return {
             "success": True,
