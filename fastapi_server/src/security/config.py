@@ -30,6 +30,7 @@ BUCKET_BY_PATH = {
     "/auth/token": "login",
     "/upload": "upload",
     "/api/upload": "upload",
+    "/jobs/upload": "upload",   # API upload file tạo job (api/job_api.py)
 }
 
 # Rate limit theo bucket (window_ms + limit)
