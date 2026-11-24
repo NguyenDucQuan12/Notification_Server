@@ -367,7 +367,7 @@ async def delete_role(
 
         return make_response(
             success=True,
-            data=None,
+            data=role_to_dict(role),
             message=f"Đã xóa cứng role_id={role_id}",
         )
 
