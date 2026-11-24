@@ -38,11 +38,16 @@ services:
     environment:
 
       # === SQL Server trên host ===
-      DB_HOST: "host.docker.internal"   # Win/mac: OK; Linux cần extra_hosts bên dưới
-      # Các tham số dưới đây phải được khai báo trong tệp .env, nếu không nó sẽ báo lỗi
-      DB_USER: "${DB_USER:?DB_USER is required}"
-      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
-      DB_NAME: "${DB_NAME:?DB_NAME is required}"
+      SQL_SERVER_HOST: "host.docker.internal"   # "localhost" trong container là chính container, không phải máy host
+      # Dockerfile cài msodbcsql18, nên trong container phải dùng Driver 18 (.env.api đang ghi 17 cho máy local).
+      SQL_SERVER_DRIVER: "ODBC Driver 18 for SQL Server"
+
+      # === Redis ===
+      # .env.api ghi 127.0.0.1 (khi chạy local). Trong Docker phải dùng tên service "redis".
+      REDIS_URL: "redis://redis:6379/0"
+
+      # Số tiến trình API (dùng nhiều nhân CPU). Tổng kết nối SQL = API_WORKERS x (DB_POOL + DB_MAX_OVERFLOW).
+      API_WORKERS: "2"
 
       # === Thư mục gốc lưu file upload TRONG CONTAINER ===
       UPLOAD_DIRECTORY: "/app/uploads"
@@ -98,18 +103,102 @@ services:
       timeout: 5s  # quá 5s chưa xong xem như fail.
       retries: 3  #  fail liên tiếp 3 lần → container unhealthy
       start_period: 15s  # chờ 15s sau khi container start rồi mới tính fail.
-  notification-worker:
+  noti_server:
+    # Notification Server: đọc Redis Stream và đẩy thông báo realtime qua WebSocket.
     build:
-      context: ./worker_server
-    command:
-      - python
-      - -m
-      - workers.notification_outbox_worker
+      context: ./noti_server
+    image: noti-server:2.0.0
+    container_name: noti-server
     env_file:
-      - ./.env
+      - ./env/.env.common
+      - ./env/.env.noti
+    environment:
+      # Ghi đè REDIS_URL của .env.common (127.0.0.1 chỉ đúng khi chạy local, trong Docker phải dùng tên service).
+      REDIS_URL: "redis://redis:6379/0"
+      PORT: "8000"
+      # .env.noti ghi "development" cho chạy local; trong Docker chạy production (tắt /docs, log JSON).
+      ENVIRONMENT: "production"
+    ports:
+      - "${TAILSCALE_IP}:1234:8000"   # Client kết nối ws://<TAILSCALE_IP>:1234/noti/ws/...
+    networks:
+      - backend_network
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    # Mỗi WebSocket là 1 file descriptor. Mặc định Linux chỉ cho 1024 -> nâng lên để phục vụ hàng nghìn kết nối.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Cho server 15 giây để đóng các WebSocket với code 1012 trước khi Docker kill.
+    stop_grace_period: 15s
+    healthcheck:
+      # Dùng /health/ready: báo unhealthy khi mất Redis.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  notification-worker:
+    # Outbox Worker: quét notification_outbox còn 'pending' và publish lại vào Redis.
+    build:
+      context: ./fastapi_server
+    image: fastapi-server:0.0.1        # Cùng image với docker_api, build 1 lần dùng cho cả 2.
+    container_name: notification-worker
+    working_dir: /app/src              # Để "python -m workers..." import được db/, services/
+    command: ["python", "-m", "workers.notification_outbox_worker"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.api
+    environment:
+      SQL_SERVER_HOST: "host.docker.internal"
+      SQL_SERVER_DRIVER: "ODBC Driver 18 for SQL Server"
+      REDIS_URL: "redis://redis:6379/0"
+      NOTIFICATION_WORKER_POLL_SECONDS: "1"
+      NOTIFICATION_WORKER_BATCH_SIZE: "500"
+    networks:
+      - backend_network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 20s             # Cho worker xử lý nốt batch đang chạy khi docker stop.
+
+  job-worker:
+    # Job Worker: lấy job từ Redis queue, xử lý file, cập nhật job_record và gửi thông báo tiến trình.
+    build:
+      context: ./fastapi_server
+    image: fastapi-server:0.0.1        # Cùng image với docker_api.
+    container_name: job-worker
+    working_dir: /app/src
+    command: ["python", "-m", "workers.job_worker"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.api
+    environment:
+      SQL_SERVER_HOST: "host.docker.internal"
+      SQL_SERVER_DRIVER: "ODBC Driver 18 for SQL Server"
+      REDIS_URL: "redis://redis:6379/0"
+      UPLOAD_DIRECTORY: "/app/uploads"
+      JOB_WORKER_CONCURRENCY: "2"
+    volumes:
+      # PHẢI trùng volume upload của docker_api: worker đọc file do API lưu và ghi file kết quả.
+      - type: bind
+        source: ./assets/file
+        target: /app/uploads
+    networks:
+      - backend_network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s             # Cho worker xử lý nốt job đang chạy khi docker stop.
 
 networks:
   backend_network:
