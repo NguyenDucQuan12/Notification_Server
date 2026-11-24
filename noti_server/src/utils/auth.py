@@ -1,3 +1,17 @@
+"""
+Xác thực và phân quyền cho kết nối WebSocket.
+
+Luồng xác thực:
+1. (Tùy chọn) Kiểm tra header Origin nằm trong danh sách cho phép (chống CSWSH).
+2. Lấy `ticket` từ query string, GETDEL trong Redis để đổi lấy Identity.
+3. Kiểm tra ticket được cấp cho đúng channel đang kết nối
+   (ticket channel=user không được dùng để nghe tenant_dashboard).
+4. Kiểm tra quyền (permission) tương ứng với channel.
+
+Mọi lỗi đều ném WebSocketAuthError kèm close code + reason để router đóng
+kết nối thống nhất. Danh sách close code: xem utils/close_codes.py.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -5,64 +19,135 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from services.ws_ticket_service import consume_ws_ticket
+from config.configs import settings
+from services.ws_ticket_service import TicketServiceUnavailable, consume_ws_ticket
+from utils import close_codes
 
 
-@dataclass
+@dataclass(frozen=True)
 class Identity:
+    """
+    Thông tin người dùng lấy từ ticket.
+
+    frozen=True: không cho sửa sau khi tạo, tránh vô tình đổi quyền giữa chừng.
+    """
     tenant_id: str
     user_id: str
-    username: str | None = None
+    user_name: str | None = None
     role_id: str | None = None
     role_name: str | None = None
     is_superuser: bool = False
-    permissions: list[str] = field(default_factory=list)
+    permissions: frozenset[str] = field(default_factory=frozenset)
     channel: str | None = None
     job_id: str | None = None
+
+    @classmethod
+    def from_ticket_payload(cls, payload: dict[str, Any]) -> "Identity":
+        """
+        Chuyển payload JSON của ticket thành Identity, ép kiểu an toàn.
+        payload JSON có thể bị giả mạo, nên KHÔNG dùng trực tiếp.
+        """
+        raw_permissions = payload.get("permissions") or []
+        if not isinstance(raw_permissions, (list, tuple, set)):
+            raw_permissions = []
+
+        def _opt_str(value: Any) -> str | None:
+            return None if value is None else str(value)
+
+        return cls(
+            tenant_id=str(payload["tenant_id"]),
+            user_id=str(payload["user_id"]),
+            user_name=_opt_str(payload.get("user_name")),
+            role_id=_opt_str(payload.get("role_id")),
+            role_name=_opt_str(payload.get("role_name")),
+            # Chỉ nhận đúng giá trị True. Tránh trường hợp chuỗi "false" bị bool() thành True.
+            is_superuser=payload.get("is_superuser") is True,
+            permissions=frozenset(str(p) for p in raw_permissions),
+            channel=_opt_str(payload.get("channel")),
+            job_id=_opt_str(payload.get("job_id")),
+        )
+
+class WebSocketAuthError(Exception):
+    """
+    Lỗi xác thực/phân quyền. Router dùng code + reason để đóng WebSocket.
+    """
+    def __init__(self, code: int, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
 
 
 def identity_has_permission(identity: Identity, permission: str) -> bool:
     """
-    Kiểm tra quyền.
+    Kiểm tra xem Identity có quyền đó hay không.
 
-    Superuser được phép toàn bộ.
+    Superuser có mọi quyền; user thường phải có đúng permission.
     """
-
-    if identity.is_superuser:
-        return True
-
-    return permission in identity.permissions
+    return identity.is_superuser or permission in identity.permissions
 
 
-async def get_current_identity_from_websocket(websocket: WebSocket) -> Identity:
+def check_origin(websocket: WebSocket) -> None:
     """
-    Xác thực WebSocket bằng ticket ngắn hạn.
+    Chống Cross-Site WebSocket Hijacking (CSWSH).
 
-    Không dùng access token trong query nữa vì có thể bị lộ trong logs, thay vào đó là ticket ngắn hạn chỉ dùng để xác thực WebSocket một lần duy nhất.
-    Ticket này được tạo ra sau khi user đăng nhập thành công, chứa thông tin cần thiết để xác thực và phân quyền cho WebSocket, và được lưu tạm thời trong Redis với TTL ngắn (ví dụ 5 phút). Khi client kết nối WebSocket, họ sẽ gửi ticket này lên để xác thực. Server sẽ kiểm tra ticket này trong Redis, nếu hợp lệ thì trả về thông tin identity tương ứng, nếu không thì từ chối kết nối. Sau khi ticket được sử dụng, nó sẽ bị xóa khỏi Redis để đảm bảo tính bảo mật.
-    Cách này giúp giảm rủi ro lộ token dài hạn và chỉ cho phép kết nối WebSocket với các quyền đã được xác định trước, đồng thời vẫn đảm bảo tính tiện lợi cho client khi không phải gửi token dài hạn trong query string.
+    Trình duyệt KHÔNG áp dụng CORS cho WebSocket: một trang web độc hại vẫn có
+    thể mở WebSocket tới server của mình. Trình duyệt luôn gửi header Origin,
+    nên server tự kiểm tra Origin đó.
+
+    - WS_ALLOWED_ORIGINS rỗng       -> bỏ qua kiểm tra (chế độ dev / client nội bộ).
+    - Không có header Origin         -> cho qua (client không phải trình duyệt,
+                                        vd Python/mobile; vẫn phải có ticket hợp lệ).
+    - Có Origin nhưng không nằm trong danh sách -> từ chối.
     """
+    allowed = settings.ws_allowed_origins
+    if not allowed:
+        return
 
-    # Lấy ticket từ query params
+    origin = websocket.headers.get("origin")
+    if origin and origin.rstrip("/") not in allowed:
+        raise WebSocketAuthError(close_codes.FORBIDDEN, "origin_not_allowed")
+
+async def authenticate_websocket(
+    websocket: WebSocket,
+    *,
+    expected_channel: str,
+    required_permission: str,
+    job_id: str | None = None,
+) -> Identity:
+    """
+    Thực hiện toàn bộ các bước xác thực + phân quyền cho 1 kết nối.
+
+    Thứ tự kiểm tra có chủ ý:
+    Origin (rẻ nhất, không cần Redis) -> ticket (tốn 1 lệnh Redis) -> channel -> quyền.
+    """
+    # Kiểm tra Origin để chống CSWSH. Nếu không hợp lệ, ném WebSocketAuthError.
+    check_origin(websocket)
+
+    # Lấy ticket từ query string
     ticket = websocket.query_params.get("ticket")
-
     if not ticket:
-        raise ValueError("Ticket chưa được cung cấp để xác thực WebSocket")
+        raise WebSocketAuthError(close_codes.UNAUTHORIZED, "ticket_missing")
 
-    # Xác thực ticket và lấy payload. Nếu có lỗi thì trả về None.
-    payload = await consume_ws_ticket(ticket)
+    # Lấy payload từ Redis và xóa ticket luôn (GETDEL)
+    try:
+        payload = await consume_ws_ticket(ticket)
+    except TicketServiceUnavailable as exc:
+        raise WebSocketAuthError(close_codes.TRY_AGAIN_LATER, "auth_service_unavailable") from exc
 
     if not payload:
-        raise ValueError("Ticket không hợp lệ hoặc đã hết hạn")
+        raise WebSocketAuthError(close_codes.UNAUTHORIZED, "ticket_invalid_or_expired")
 
-    return Identity(
-        tenant_id=str(payload["tenant_id"]),
-        user_id=str(payload["user_id"]),
-        username=payload.get("username"),
-        role_id=payload.get("role_id"),
-        role_name=payload.get("role_name"),
-        is_superuser=bool(payload.get("is_superuser", False)),
-        permissions=[str(p) for p in payload.get("permissions", [])],
-        channel=payload.get("channel"),
-        job_id=payload.get("job_id"),
-    )
+    identity = Identity.from_ticket_payload(payload)
+
+    # Ticket được cấp cho channel nào thì chỉ dùng cho channel đó.
+    if identity.channel != expected_channel:
+        raise WebSocketAuthError(close_codes.FORBIDDEN, "ticket_channel_mismatch")
+
+    # Với channel job: ticket phải được cấp cho đúng job_id trong URL.
+    if job_id is not None and identity.job_id != job_id:
+        raise WebSocketAuthError(close_codes.FORBIDDEN, "ticket_job_mismatch")
+
+    if not identity_has_permission(identity, required_permission):
+        raise WebSocketAuthError(close_codes.FORBIDDEN, "permission_denied")
+
+    return identity
