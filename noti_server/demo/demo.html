@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  Trang demo client trình duyệt cho Notification Server.
+  Cách dùng: mở file này bằng trình duyệt (double-click), rồi:
+    1. Chạy: python demo/noti_demo.py ticket --user u1   -> copy URL WebSocket in ra
+    2. Dán URL vào ô bên dưới, bấm "Kết nối"
+    3. Chạy: python demo/noti_demo.py publish --user u1 --count 5  -> thấy thông báo hiện ra
+  Ticket chỉ dùng được 1 lần: mỗi lần kết nối lại phải tạo ticket mới (giống thực tế).
+-->
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notification Demo</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --ok:#15803d; --warn:#b45309; --err:#b91c1c; --accent:#2563eb; --border:#e5e7eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b22; --text:#e5e7eb; --muted:#9ca3af; --border:#2a2f3a; --accent:#60a5fa; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 16px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  input { flex:1; min-width: 240px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  button.secondary { background: transparent; color: var(--text); border:1px solid var(--border); }
+  .status { margin: 12px 0; font-weight:600; }
+  .status.ok { color: var(--ok); } .status.warn { color: var(--warn); } .status.err { color: var(--err); }
+  #log { display:flex; flex-direction:column; gap:8px; }
+  .item { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+  .item .meta { color: var(--muted); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .item.event { border-left: 4px solid var(--accent); }
+  .item.system { opacity: .75; }
+  .item.error { border-left: 4px solid var(--err); }
+  pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Notification Server – client trình duyệt</h1>
+  <p class="sub">Dán URL WebSocket (có ticket) do lệnh <code>noti_demo.py ticket</code> in ra.</p>
+  <div class="row">
+    <input id="url" placeholder="ws://127.0.0.1:1234/noti/ws/events?ticket=...">
+    <button id="connect">Kết nối</button>
+    <button id="ping" class="secondary">Gửi ping</button>
+    <button id="close" class="secondary">Ngắt</button>
+  </div>
+  <div id="status" class="status">Chưa kết nối</div>
+  <div id="log"></div>
+</main>
+<script>
+  let ws = null;
+  const $ = (id) => document.getElementById(id);
+  const status = (text, cls) => { $("status").textContent = text; $("status").className = "status " + (cls || ""); };
+
+  // Thêm 1 dòng vào đầu danh sách (mới nhất ở trên).
+  function add(kind, title, data) {
+    const div = document.createElement("div");
+    div.className = "item " + kind;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = new Date().toLocaleTimeString() + "  " + title;
+    div.appendChild(meta);
+    if (data) {
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify(data, null, 2);
+      div.appendChild(pre);
+    }
+    $("log").prepend(div);
+  }
+
+  $("connect").onclick = () => {
+    if (ws) ws.close();
+    const url = $("url").value.trim();
+    if (!url) return status("Hãy dán URL WebSocket", "warn");
+    ws = new WebSocket(url);
+    status("Đang kết nối...", "warn");
+
+    ws.onmessage = (msg) => {
+      const ev = JSON.parse(msg.data);
+      if (ev.type === "connected") { status("Đã kết nối – conn_id " + ev.connection_id, "ok"); add("system", "connected", ev); }
+      else if (ev.type === "heartbeat") {
+        status(ev.stream_status === "ok" ? "Đã kết nối (heartbeat " + new Date().toLocaleTimeString() + ")" : "Mất kết nối Redis tạm thời – đang chờ...", ev.stream_status === "ok" ? "ok" : "warn");
+      }
+      else if (ev.type === "pong") add("system", "pong");
+      else if (ev.type === "replay_incomplete") add("error", "replay_incomplete – có thể đã mất event, nên đồng bộ qua API", ev);
+      else if (ev.type === "server_error") add("error", "server_error", ev);
+      // Event nghiệp vụ: client thật sẽ lưu ev.event_id làm last_event_id để reconnect.
+      else add("event", "EVENT " + ev.event_id + " – " + (ev.title || ev.type), ev);
+    };
+    // Close code giải thích lý do (xem utils/close_codes.py): 4401 ticket sai/đã dùng, 4403 không đủ quyền...
+    ws.onclose = (e) => { status("Đã đóng: code=" + e.code + (e.reason ? " reason=" + e.reason : "") + " (tạo ticket mới để kết nối lại)", "err"); ws = null; };
+    ws.onerror = () => status("Lỗi kết nối – server có đang chạy không?", "err");
+  };
+  $("ping").onclick = () => ws && ws.readyState === 1 && ws.send("ping");
+  $("close").onclick = () => ws && ws.close(1000, "client_close");
+</script>
+</body>
+</html>
