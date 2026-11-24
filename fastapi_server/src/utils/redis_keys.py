@@ -1,11 +1,10 @@
 """
 Các hàm tạo key cho Redis, để đảm bảo tính nhất quán và dễ quản lý.  
-Dành cho các key liên quan đến stream notification, được phân loại theo tenant, user, job,... để dễ dàng subscribe và publish event.
 """
 from __future__ import annotations
 
 # STREAM_PREFIX = getenv_str("STREAM_PREFIX", "prod_demo:stream")
-# List Redis dùng để "đánh thức" Outbox Worker ngay khi có outbox mới (thay vì chờ hết chu kỳ poll).
+# Key dùng để "đánh thức" Outbox Worker ngay khi có outbox mới (thay vì chờ hết chu kỳ poll).
 OUTBOX_WAKEUP_KEY = "noti:outbox:wakeup"
 
 def user_stream_key(tenant_id: str, user_id: str) -> str:
@@ -34,7 +33,7 @@ def job_stream_key(tenant_id: str, job_id: str) -> str:
 def global_stream_key() -> str:
     """
     Key của stream toàn cục cho tất cả event của tất cả tenant.  
-    Dùng cho mục đích `monitoring/logging, admin/superuser` có thể subscribe để xem toàn bộ event hệ thống.
+    Dùng cho mục đích `monitoring/logging, admin/superuser` để xem toàn bộ event hệ thống.
     """
     return "stream:noti:global"
 
@@ -44,3 +43,8 @@ def ws_ticket_key(ticket: str) -> str:
     Ticket chỉ sống rất ngắn và dùng một lần.
     """
     return f"ws:ticket:{ticket}"
+
+
+# Hàng đợi job xử lý file (Redis List). API LPUSH, Job Worker BRPOP.
+# Mỗi phần tử là JSON {"tenant_id": "...", "job_id": "..."}.
+JOB_QUEUE_KEY = "queue:jobs"
