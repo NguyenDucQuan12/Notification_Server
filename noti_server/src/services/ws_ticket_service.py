@@ -1,99 +1,73 @@
+"""
+Đọc và "tiêu thụ" WebSocket ticket do API server tạo ra.
+
+Phân chia trách nhiệm:
+- API server (fastapi_server) TẠO ticket: xác thực JWT -> lưu payload vào Redis
+  với key `ws:ticket:<ticket>` và TTL ngắn (vd 60 giây).
+- Notification server (file này) CHỈ ĐỌC + XÓA ticket. Không tạo ticket
+
+Bây giờ dùng lệnh GETDEL (Redis >= 6.2): đọc và xóa trong MỘT lệnh nguyên tử.
+Redis xử lý lệnh tuần tự, nên chỉ đúng 1 kết nối nhận được payload.
+"""
+
 from __future__ import annotations
 
 import json
-import secrets
+import logging
 from typing import Any
 
-import redis.asyncio as redis_async
+from redis.exceptions import RedisError
 
-from config.configs import settings
+from services.redis_client import get_redis_fast
 from utils.redis_keys import ws_ticket_key
 
+logger = logging.getLogger("noti.ticket")
 
-redis_client = redis_async.from_url(
-    settings.REDIS_URL,
-    decode_responses=True,
-)
-WS_TICKET_TTL_SECONDS = 60
+# Ticket do secrets.token_urlsafe(32) tạo ra dài ~43 ký tự.
+# Giới hạn độ dài để chặn input rác/khổng lồ trước khi gửi vào Redis.
+_MAX_TICKET_LENGTH = 256
 
 
-async def create_ws_ticket(
-    *,
-    identity: dict[str, Any],
-    channel: str,
-    job_id: str | None = None,
-) -> str:
+class TicketServiceUnavailable(Exception):
     """
-    Tạo WebSocket ticket ngắn hạn.
+    Không kiểm tra được ticket vì Redis lỗi (khác với ticket SAI).
 
-    identity:
-    - thông tin user lấy từ JWT/cookie sau khi HTTP API xác thực thành công
-
-    channel:
-    - user
-    - tenant_dashboard
-    - job
-
-    job_id:
-    - chỉ dùng khi cấp ticket nghe riêng một job
-
-    Ticket này:
-    - dùng một lần
-    - TTL ngắn
-    - không phải access token thật
-    - nếu lộ cũng giảm rủi ro hơn nhiều so với JWT dài hạn
+    Phân biệt 2 trường hợp này rất quan trọng:
+    - Ticket sai/hết hạn  -> lỗi của client, đóng code 4401, client phải xin ticket mới.
+    - Redis lỗi           -> lỗi của server, đóng code 1013 (Try Again Later),
+                             client nên thử lại sau vài giây.
     """
-
-    ticket = secrets.token_urlsafe(32)
-
-    payload = {
-        "tenant_id": identity["tenant_id"],
-        "user_id": identity["user_id"],
-        "username": identity.get("username"),
-        "role_id": identity.get("role_id"),
-        "role_name": identity.get("role_name"),
-        "is_superuser": bool(identity.get("is_superuser", False)),
-        "permissions": identity.get("permissions", []),
-        "channel": channel,
-        "job_id": job_id,
-    }
-
-    await redis_client.set(
-        ws_ticket_key(ticket),
-        json.dumps(payload, ensure_ascii=False),
-        ex=WS_TICKET_TTL_SECONDS,
-    )
-
-    return ticket
-
 
 async def consume_ws_ticket(ticket: str) -> dict[str, Any] | None:
     """
-    Lấy và xóa WebSocket ticket.
+    Đọc và xóa ticket trong một thao tác nguyên tử.  
+    Trả về:
+    - dict payload nếu ticket hợp lệ.
+    - None nếu ticket không tồn tại, đã dùng, hết hạn, hoặc payload hỏng.
 
-    Đây là thao tác dùng một lần.
-
-    Nếu ticket tồn tại:
-    - đọc payload
-    - xóa ticket
-    - trả identity
-
-    Nếu ticket không tồn tại:
-    - trả None
+    Ném:
+    - TicketServiceUnavailable nếu Redis không trả lời được.
     """
-    # Tạo key trong Redis từ ticket
-    key = ws_ticket_key(ticket)
-    # Lấy payload từ Redis. Nếu không có thì trả về None.
-    raw = await redis_client.get(key)
-    # Nếu có thì xóa ngay để ticket không dùng lại được, sau đó trả về payload đã giải mã. Nếu có lỗi khi giải mã thì cũng trả về None.
+    if not ticket or len(ticket) > _MAX_TICKET_LENGTH:
+        return None
+    try:
+        # GETDEL: lấy giá trị và xóa key luôn. Không ai dùng lại được ticket này.
+        raw = await get_redis_fast().getdel(ws_ticket_key(ticket))
+    except RedisError as exc:
+        logger.error("Cannot read ws ticket from Redis", extra={"error": repr(exc)})
+        raise TicketServiceUnavailable("redis_unavailable") from exc
+
     if not raw:
         return None
-
-    # Xóa ngay để ticket không dùng lại được.
-    await redis_client.delete(key)
-
-    # Tiến hành giải mã payload. Nếu có lỗi khi giải mã thì trả về None.
     try:
-        return json.loads(raw)
-    except Exception:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ws ticket payload is not valid JSON")
         return None
+
+    # Payload phải là object và có đủ 2 trường định danh bắt buộc.
+    if not isinstance(payload, dict) or not payload.get("tenant_id") or not payload.get("user_id"):
+        logger.warning("Ws ticket payload missing tenant_id/user_id")
+        return None
+
+    return payload
