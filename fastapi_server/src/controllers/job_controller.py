@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from controllers.notification_controller import NotificationController
 from db.query_job_record import create_job_record, get_all_jobs, get_job_by_id, get_user_jobs
 from services.job_notifier import notify_job
-from services.job_queue import enqueue_job
-from services.job_storage import (
+from utils.job_queue import enqueue_job
+from utils.job_storage import (
     UploadTooLargeError,
     delete_job_files,
     resolve_object_path,
