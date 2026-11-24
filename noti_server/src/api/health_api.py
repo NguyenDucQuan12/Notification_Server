@@ -1,16 +1,5 @@
 """
 Các endpoint kiểm tra sức khỏe
-
-- GET /health/live  (liveness) : process còn chạy không?
-    Không kiểm tra Redis. Nếu endpoint này lỗi, orchestrator sẽ KHỞI ĐỘNG LẠI container.
-    (Không nên restart chỉ vì Redis chết — restart cũng không làm Redis sống lại.)
-
-- GET /health/ready (readiness): sẵn sàng nhận kết nối mới chưa?
-    Kiểm tra Redis + server không đang tắt. Nếu lỗi (HTTP 503), load balancer
-    tạm NGỪNG chuyển client mới vào instance này, nhưng không restart nó.
-
-- GET /health/stats : số liệu vận hành (số kết nối, số event đã gửi...).
-    Nên chặn endpoint này ở proxy/firewall, chỉ cho mạng nội bộ truy cập.
 """
 
 from __future__ import annotations
@@ -21,6 +10,7 @@ from fastapi.responses import JSONResponse
 from config.configs import settings
 from services.connection_manager import connection_manager
 from services.redis_client import ping_redis
+from services.stream_hub import stream_hub
 from utils.utils import utc_now_iso
 
 router = APIRouter(prefix="/health", tags=["Health"])
@@ -34,7 +24,6 @@ async def liveness() -> dict[str, str]:
     (Không nên restart chỉ vì Redis chết — restart cũng không làm Redis sống lại.)
     """
     return {"status": "alive", "server_time": utc_now_iso()}
-
 
 @router.get("/ready")
 async def readiness() -> JSONResponse:
@@ -58,7 +47,6 @@ async def readiness() -> JSONResponse:
         },
     )
 
-
 @router.get("/stats")
 async def stats() -> dict:
     """
@@ -70,5 +58,7 @@ async def stats() -> dict:
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT,
         **connection_manager.snapshot(),
+        # Trạng thái Stream Hub: số stream đang nghe, số event đã đọc/phát, shard nào mất Redis...
+        "stream_hub": stream_hub.snapshot(),
         "server_time": utc_now_iso(),
     }
