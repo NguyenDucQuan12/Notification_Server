@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import exc, select
+from sqlalchemy import exc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.job_record_model import JobRecord
@@ -45,7 +46,7 @@ async def create_job_record(
             select(Users).where(
                 Users.tenant_id == tenant_id,
                 Users.user_id == user_id,
-                Users.is_active.is_(True),
+                Users.is_active == True,  # noqa: E712 - SQL Server không hỗ trợ "IS 1"
             )
         )
         user = user_result.scalar_one_or_none()
@@ -616,3 +617,147 @@ async def delete_job_record(
         response["message"] = f"Lỗi không xác định khi xóa job_record: {str(e)}"
 
     return response
+
+
+# ============================================================
+# CÁC HÀM DÀNH CHO JOB WORKER
+# ============================================================
+
+async def claim_job_for_processing(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    job_id: str,
+    message: str = "Đang xử lý",
+) -> dict[str, Any] | None:
+    """
+    Nhận (claim) job để xử lý một cách nguyên tử: queued -> processing, attempts + 1.
+
+    Câu UPDATE có điều kiện status='queued' nên khi nhiều worker cùng lấy được 1 job_id
+    (ví dụ job bị đẩy vào hàng đợi 2 lần) thì chỉ đúng 1 worker claim thành công.
+
+    Trả về dict job sau khi claim, hoặc None nếu job không tồn tại / không còn ở trạng thái queued.
+    """
+    now = utc_now()
+    try:
+        result = await db.execute(
+            update(JobRecord)
+            .where(
+                JobRecord.tenant_id == tenant_id,
+                JobRecord.job_id == job_id,
+                JobRecord.status == "queued",
+            )
+            .values(
+                status="processing",
+                attempts=JobRecord.attempts + 1,
+                message=message,
+                error=None,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await db.rollback()
+            return None
+
+        await db.commit()
+
+        job = (
+            await db.execute(
+                select(JobRecord).where(
+                    JobRecord.tenant_id == tenant_id,
+                    JobRecord.job_id == job_id,
+                )
+            )
+        ).scalar_one()
+        return job_to_dict(job)
+
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def requeue_job_for_retry(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    job_id: str,
+    error: str,
+    message: str,
+) -> dict[str, Any] | None:
+    """
+    Đưa job đang processing về lại queued để thử lại (giữ nguyên attempts đã tăng).
+    """
+    try:
+        job = (
+            await db.execute(
+                select(JobRecord).where(
+                    JobRecord.tenant_id == tenant_id,
+                    JobRecord.job_id == job_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not job:
+            return None
+
+        job.status = "queued"
+        job.message = message
+        job.error = error[:500]
+        job.updated_at = utc_now()
+
+        await db.commit()
+        await db.refresh(job)
+        return job_to_dict(job)
+
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def recover_stale_jobs(
+    db: AsyncSession,
+    *,
+    stale_after_seconds: int,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """
+    Tìm các job bị "bỏ quên" để Job Worker đẩy lại vào hàng đợi:
+
+    - status='processing' nhưng lâu không cập nhật: worker xử lý đã chết giữa chừng
+      -> chuyển về 'queued'.
+    - status='queued' nhưng lâu không ai xử lý: phần tử trong Redis queue bị mất
+      (Redis restart, API lỗi khi LPUSH...).
+
+    Việc đẩy trùng là an toàn vì claim_job_for_processing() chỉ cho 1 worker nhận job.
+    Trả về danh sách {"tenant_id", "job_id"} cần đẩy lại vào hàng đợi.
+    """
+    threshold = utc_now() - timedelta(seconds=stale_after_seconds)
+    try:
+        jobs = list(
+            (
+                await db.execute(
+                    select(JobRecord)
+                    .where(
+                        JobRecord.status.in_(("queued", "processing")),
+                        JobRecord.updated_at < threshold,
+                    )
+                    .order_by(JobRecord.updated_at)
+                    .limit(limit)
+                )
+            ).scalars().all()
+        )
+
+        now = utc_now()
+        for job in jobs:
+            if job.status == "processing":
+                job.status = "queued"
+                job.message = "Job bị gián đoạn, đang đưa lại vào hàng chờ"
+            # Cập nhật updated_at để không bị quét lại ngay ở vòng sau.
+            job.updated_at = now
+
+        await db.commit()
+        return [{"tenant_id": job.tenant_id, "job_id": job.job_id} for job in jobs]
+
+    except Exception:
+        await db.rollback()
+        raise

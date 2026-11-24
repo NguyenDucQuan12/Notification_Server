@@ -147,7 +147,7 @@ async def get_all_roles(
         stmt = select(Roles)
 
         if not include_inactive:
-            stmt = stmt.where(Roles.is_active.is_(True))
+            stmt = stmt.where(Roles.is_active == True)  # noqa: E712 - SQL Server không hỗ trợ "IS 1"
 
         stmt = stmt.order_by(Roles.created_at.desc()).limit(limit)
 

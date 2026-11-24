@@ -381,7 +381,7 @@ async def get_all_users(
             stmt = stmt.where(Users.tenant_id == tenant_id)
 
         if not include_inactive:
-            stmt = stmt.where(Users.is_active.is_(True))
+            stmt = stmt.where(Users.is_active == True)  # noqa: E712 - SQL Server không hỗ trợ "IS 1"
 
         stmt = (
             stmt
@@ -460,7 +460,7 @@ async def get_all_users_with_auth(
             stmt = stmt.where(Users.tenant_id == tenant_id)
 
         if not include_inactive:
-            stmt = stmt.where(Users.is_active.is_(True))
+            stmt = stmt.where(Users.is_active == True)  # noqa: E712 - SQL Server không hỗ trợ "IS 1"
 
         stmt = (
             stmt
@@ -924,7 +924,7 @@ async def check_user_exists(
         )
 
         if only_active:
-            stmt = stmt.where(Users.is_active.is_(True))
+            stmt = stmt.where(Users.is_active == True)  # noqa: E712 - SQL Server không hỗ trợ "IS 1"
 
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
