@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import re
 from typing import Any
-
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.query_users import create_user_profile, delete_user_profile
 from db.query_user_auth import create_user_auth, get_auth_for_login, record_login_failed, record_login_success
-from utils.utils import parse_permissions_from_role
 from schemas.schemas import LoginRequest, RegisterUserRequest
 from auth.hash import Hash
 from auth.oauth2 import create_access_token
 from utils.constants import EMAIL_REGEX
+from utils.utils import parse_permissions_from_role
 
 
 class AuthController:
@@ -29,11 +28,7 @@ class AuthController:
     """
 
     @staticmethod
-    async def register_user(
-        *,
-        request: RegisterUserRequest,
-        db: AsyncSession,
-    ) -> dict[str, Any]:
+    async def register_user(*, request: RegisterUserRequest, db: AsyncSession) -> dict[str, Any]:
         """
         Tạo người dùng mới.
 
