@@ -1,108 +1,97 @@
+"""
+Quản lý kết nối Redis của Notification Server.
 
+Có HAI client (hai connection pool) riêng:
 
-import os                 # Đọc biến môi trường để lấy REDIS_URL
-import redis              # Thư viện redis-py (pip install redis)
+1. redis_fast_client  -> lệnh ngắn: GETDEL ticket, PING, XREVRANGE/XINFO khi replay.
+   - socket_timeout ngắn (vài giây): Redis treo thì request lỗi nhanh.
+   - Dùng BlockingConnectionPool: khi cả pool đang bận, request CHỜ tối đa
+     REDIS_POOL_TIMEOUT giây để có kết nối rảnh, thay vì lỗi ngay lập tức
+     ("Too many connections") như ConnectionPool thường. Rất quan trọng khi
+     hàng nghìn client reconnect cùng lúc (sau deploy, sau sự cố mạng).
+
+2. redis_stream_client -> CHỈ dùng cho XREAD BLOCK của Stream Hub.
+   - socket_timeout > HUB_BLOCK_MS (đã kiểm tra trong config).
+   - Pool rất nhỏ (HUB_SHARDS + 2) vì cả process chỉ có HUB_SHARDS lệnh XREAD
+     chạy cùng lúc, KHÔNG phụ thuộc số WebSocket. Đây chính là điểm giúp server
+     phục vụ hàng nghìn kết nối: bản cũ mỗi WebSocket giữ 1 kết nối Redis.
+
+Ghi chú:
+- decode_responses=True: Redis trả str thay vì bytes (dữ liệu là JSON/văn bản).
+- Client tạo 1 lần khi import (singleton), dùng lại cho mọi request.
+- Tạo client chưa mở kết nối; kết nối chỉ mở khi chạy lệnh đầu tiên, nên import
+  module này khi Redis chưa chạy cũng không lỗi.
+"""
+
+from __future__ import annotations
+
+import logging
+
 import redis.asyncio as redis_async
 from redis.asyncio import Redis
-"""
-Đầu tiên cần chạy Redis server (có thể chạy local hoặc Docker).  
-Với Docker: `docker run -p 6379:6379 -it redis:latest`
 
-Hoặc chi tiết hơn: `docker run -d --name my-redis -p 6379:6379 -v ./redis-data:/data -e TZ=Asia/Ho_Chi_Minh redis:latest --appendonly yes`
-Cách chạy thứ 2 này sẽ lưu dữ liệu Redis ra thư mục redis-data trên host, tránh mất dữ liệu khi container dừng. (nhớ tạo thư mục redis-data trước khi chạy lệnh)
+from config.configs import settings
 
-Sau đó, cài thư viện redis-py: `pip install redis`
-Xem thêm tài liệu: https://pypi.org/project/redis/
-Lưu ý: redis-py mặc định trả về bytes, bạn có thể decode thành str (decode_responses=True) nhưng sẽ chậm hơn.
-Ở đây ta để decode_responses=False để nhận bytes, nhanh hơn, và tự decode khi cần.
-Việc kết nối Redis nên dùng connection pool để tái sử dụng kết nối TCP, giúp hiệu năng ổn định trong môi trường nhiều request.
-Mặc định Redis đã trả về pool nên ta ko cần cấu hình nữa
-"""
+logger = logging.getLogger("noti.redis")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")  # REDIS_URL chuẩn trong Docker: redis://redis:6379/0
 
-# ============================================================
-# 1. Timeout nhanh: dùng cho ping/cache/ticket/xadd/publish
-# ============================================================
-# Tạo connection pool cho kết nối nhanh
-redis_fast_client: Redis = redis_async.from_url(
-    REDIS_URL,
-    # Giữ connection sống lâu hơn.
-    socket_keepalive=True,
-    # Timeout kết nối đến Redis.
-    socket_connect_timeout=0.5,
-    # Timeout cho command thường.
-    # Không nên quá thấp như 0.2 vì dễ lỗi giả khi Redis hơi chậm.
-    socket_timeout=1.0,
-    # Giới hạn số connection của pool.
-    max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "200")),
-    # Ping định kỳ để phát hiện connection chết.
-    health_check_interval=30,
-
-    # Nếu False: Redis trả bytes.
-    # Nếu True: Redis trả str, code dễ đọc hơn, nhưng sẽ mất thời gian hơn
-    
-    decode_responses=False,
+_fast_pool = redis_async.BlockingConnectionPool.from_url(
+    settings.REDIS_URL,
+    decode_responses=True,
+    socket_keepalive=True,                           # Giữ TCP sống, phát hiện kết nối chết ở tầng OS.
+    socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+    socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+    max_connections=settings.REDIS_MAX_CONNECTIONS,
+    timeout=settings.REDIS_POOL_TIMEOUT,             # Thời gian tối đa chờ 1 kết nối rảnh.
+    health_check_interval=30,                        # Kết nối rảnh > 30s sẽ được PING lại trước khi dùng.
 )
+# from_pool: client "sở hữu" pool, nên aclose() của client đóng luôn pool.
+redis_fast_client: Redis = Redis.from_pool(_fast_pool)
 
-
-# ============================================================
-# 2. Client stream: dùng riêng cho XREAD BLOCK
-# ============================================================
 
 redis_stream_client: Redis = redis_async.from_url(
-    REDIS_URL,
-    socket_keepalive=True,
-    socket_connect_timeout=0.5,
-    # Phải lớn hơn thời gian XREAD BLOCK.
-    # Ví dụ STREAM_BLOCK_MS = 15000 thì socket_timeout nên > 15 giây.
-    socket_timeout=float(os.getenv("REDIS_STREAM_SOCKET_TIMEOUT", "20")),
-    max_connections=int(os.getenv("REDIS_STREAM_MAX_CONNECTIONS", "200")),
-    health_check_interval=30,
-    # Với notification/event JSON, True thường tiện hơn.
+    settings.REDIS_URL,
     decode_responses=True,
+    socket_keepalive=True,
+    socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+    socket_timeout=settings.REDIS_STREAM_SOCKET_TIMEOUT,  # > HUB_BLOCK_MS
+    max_connections=settings.redis_stream_max_connections,
+    health_check_interval=30,
 )
 
 
 def get_redis_fast() -> Redis:
-    """
-    Trả Redis client dùng cho command nhanh.
-
-    Dùng cho:
-    - ping
-    - get/set/delete
-    - ws ticket
-    - cache
-    - xadd event
-    - publish event
-
-    Không tạo client mới mỗi lần gọi.
-    """
-
+    """Client cho lệnh ngắn (ticket, ping, replay)."""
     return redis_fast_client
 
 
 def get_redis_stream() -> Redis:
-    """
-    Trả Redis client dùng cho stream blocking.
-
-    Dùng cho:
-    - XREAD BLOCK
-    - các tác vụ chờ lâu
-
-    Không dùng client fast cho XREAD BLOCK vì socket_timeout ngắn.
-    """
-
+    """Client cho XREAD BLOCK (chỉ Stream Hub dùng)."""
     return redis_stream_client
+
+
+async def ping_redis() -> bool:
+    """
+    Kiểm tra Redis còn sống không. Dùng cho readiness check (/health/ready).
+
+    Trả True/False thay vì ném lỗi để endpoint health luôn trả lời được.
+    """
+    try:
+        return bool(await redis_fast_client.ping())
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Redis ping failed", extra={"error": repr(exc)})
+        return False
 
 
 async def close_redis_clients() -> None:
     """
-    Đóng Redis clients khi app shutdown.
+    Đóng toàn bộ kết nối khi server tắt (gọi trong lifespan của main.py).
 
-    Với redis.asyncio, nên đóng client async rõ ràng.
-    redis-py docs cũng ghi rõ async Redis cần gọi close/aclose để đóng connection.
+    redis.asyncio yêu cầu đóng rõ ràng bằng aclose(), nếu không Python sẽ cảnh báo
+    "Unclosed connection" và kết nối có thể bị treo phía Redis.
     """
-
-    await redis_fast_client.aclose()
-    await redis_stream_client.aclose()
+    for name, client in (("fast", redis_fast_client), ("stream", redis_stream_client)):
+        try:
+            await client.aclose()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Error closing Redis client", extra={"client": name, "error": repr(exc)})
