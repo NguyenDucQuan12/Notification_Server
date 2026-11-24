@@ -1,184 +1,156 @@
+"""
+Các endpoint WebSocket nhận thông báo realtime.
+
+┌──────────────────────────────┬──────────────────┬───────────────────────────────┬─────────────────────────────┐
+│ Đường dẫn                    │ channel (ticket) │ Quyền cần có                  │ Redis Stream                │
+├──────────────────────────────┼──────────────────┼───────────────────────────────┼─────────────────────────────┤
+│ /noti/ws/events              │ user             │ notification:subscribe        │ ...:tenant:{t}:user:{u}     │
+│ /noti/ws/tenant-dashboard    │ tenant_dashboard │ notification:tenant_dashboard │ ...:tenant:{t}:dashboard    │
+│ /noti/ws/jobs/{job_id}       │ job              │ notification:job_watch        │ ...:tenant:{t}:job:{job_id} │
+│ /noti/ws/global-events       │ global           │ notification:global_subscribe │ stream:noti:global          │
+└──────────────────────────────┴──────────────────┴───────────────────────────────┴─────────────────────────────┘
+
+Kết nối mẫu:
+    ws://127.0.0.1:1234/noti/ws/events?ticket=<WS_TICKET>&last_event_id=<ID_CUỐI_ĐÃ_NHẬN>
+"""
+
 from __future__ import annotations
-from fastapi import APIRouter, Depends, WebSocket
 
+import logging
+import re
+from typing import Callable
 
+from fastapi import APIRouter, WebSocket
 
 from controllers.noti_controller import NotiController
-from utils.auth import get_current_identity_from_websocket, identity_has_permission
-from utils.redis_keys import job_stream_key, tenant_stream_key, user_stream_key, global_stream_key
+from services.connection_manager import connection_manager
+from utils import close_codes
+from utils.auth import Identity, WebSocketAuthError, authenticate_websocket
+from utils.redis_keys import global_stream_key, job_stream_key, tenant_stream_key, user_stream_key
 
+logger = logging.getLogger("noti.api")
 
-# Router cho các endpoint liên quan đến thông báo. Hiện tại chỉ có WebSocket, chưa có REST API nào.
 router = APIRouter(
     prefix="/noti",
-    tags=["Notifications"],
+    tags=["Notifications"]
 )
 
+# job_id: tối đa 200 ký tự, không chứa khoảng trắng / ký tự điều khiển.
+# (Bảo vệ chính vẫn là ticket phải được cấp cho đúng job_id này.)
+_JOB_ID_RE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,200}$")
 
+
+async def _serve_channel(
+    websocket: WebSocket,
+    *,
+    channel: str,
+    permission: str,
+    stream_key_of: Callable[[Identity], str],
+    job_id: str | None = None,
+) -> None:
+    """
+    Luồng xử lý WebSocket cho 1 channel cụ thể.
+
+    1. accept()
+    2. Xác thực ticket + kiểm tra channel + quyền
+    3. Tính stream key từ identity (KHÔNG lấy từ input của client -> không thể
+       nghe trộm stream của tenant/user khác)
+    4. Giao cho controller stream event
+    """
+    # Chấp nhận kết nối WebSocket trước khi xác thực để client nhận được lỗi 403/401.
+    await websocket.accept()
+
+    try:
+        # Xác thực ticket, kiểm tra channel, quyền, job_id (nếu có).
+        identity = await authenticate_websocket(
+            websocket,
+            expected_channel=channel,
+            required_permission=permission,
+            job_id=job_id,
+        )
+    except WebSocketAuthError as exc:
+        connection_manager.record_rejection(exc.reason)
+        logger.info(
+            "Không thể xác thực WebSocket",
+            extra={"channel": channel, "reason": exc.reason, "client": _client_addr(websocket)},
+        )
+        await NotiController.safe_close(websocket, exc.code, exc.reason)
+        return
+
+    # Kết nối thành công, giao cho controller stream event.
+    await NotiController.run_stream_websocket(
+        websocket=websocket,
+        identity=identity,
+        stream_key=stream_key_of(identity),
+        channel=channel,
+    )
+
+
+def _client_addr(websocket: WebSocket) -> str | None:
+    """
+    Lấy địa chỉ IP:port của client, nếu có.
+    """
+    return f"{websocket.client.host}:{websocket.client.port}" if websocket.client else None
 
 
 @router.websocket("/ws/events")
 async def websocket_user_events(websocket: WebSocket) -> None:
     """
-    WebSocket nhận event theo user.  
-    Client kết nối:  
-    ws://127.0.0.1:8001/quan/noti/ws/events?ticket=<WEBSOCKET_TICKET>&last_event_id=0-0
-    Quyền cần có:
-    notification:subscribe  
-    Đây là endpoint chính để client subscribe event theo user_id.
+    Nhận event của CHÍNH user đang đăng nhập (endpoint chính cho người dùng).
     """
-
-    # Xác thực WebSocket ticket và lấy identity.
-    # Nếu có lỗi xác thực, đóng WebSocket với code 4401 (Unauthorized).
-    try:
-        identity = await get_current_identity_from_websocket(websocket)
-    except ValueError as exc:
-        await websocket.close(code=4401, reason=str(exc))
-        return
-
-    # Kiểm tra channel trong ticket phải là "user", nếu không thì đóng WebSocket với code 4403 (Forbidden).
-    if identity.channel != "user":
-        await websocket.close(code=4403, reason="Ticket không hợp lệ cho channel này")
-        return
-
-    # Kiểm tra quyền "notification:subscribe", nếu không có thì đóng WebSocket với code 4403 (Forbidden).
-    if not identity_has_permission(identity, "notification:subscribe"):
-        await websocket.close(code=4403, reason="Ticket không có quyền truy cập")
-        return
-
-    # Tạo stream_key cho user dựa trên tenant_id và user_id trong identity. Ví dụ: "stream:noti:tenant:123:user:456". 
-    # Cách tạo stream_key phải nhất quán với cách publish event trong API service và worker service, để đảm bảo client subscribe đúng stream.
-    stream_key = user_stream_key(identity.tenant_id, identity.user_id)
-
-    # Chạy hàm stream_live_events để lắng nghe event mới liên tục và gửi về client qua WebSocket.
-    await NotiController.run_stream_websocket(
-        websocket=websocket,
-        identity=identity,
-        stream_key=stream_key,
+    await _serve_channel(
+        websocket,
         channel="user",
+        permission="notification:subscribe",
+        stream_key_of=lambda ident: user_stream_key(ident.tenant_id, ident.user_id),
     )
 
 
 @router.websocket("/ws/tenant-dashboard")
 async def websocket_tenant_dashboard(websocket: WebSocket) -> None:
     """
-    WebSocket dashboard theo tenant.
-
-    Client kết nối:
-    ws://127.0.0.1:8001/quan/noti/ws/tenant-dashboard?token=<JWT>&last_event_id=0-0
-
-    Quyền cần có:
-    notification:tenant_dashboard
-
-    Admin/superuser dùng endpoint này để theo dõi toàn bộ job trong tenant.
+    Admin theo dõi toàn bộ event trong tenant của mình.
+    Dành cho màn hình dashboard của tenant (vd màn hình tổng quan job).
     """
-
-    try:
-        identity = await get_current_identity_from_websocket(websocket)
-    except ValueError as exc:
-        await websocket.close(code=4401, reason=str(exc))
-        return
-
-    if identity.channel != "tenant_dashboard":
-        await websocket.close(code=4403, reason="Ticket channel mismatch")
-        return
-
-    if not identity_has_permission(identity, "notification:tenant_dashboard"):
-        await websocket.close(code=4403, reason="Missing permission")
-        return
-
-    stream_key = tenant_stream_key(identity.tenant_id)
-
-    await NotiController.run_stream_websocket(
-        websocket=websocket,
-        identity=identity,
-        stream_key=stream_key,
+    await _serve_channel(
+        websocket,
         channel="tenant_dashboard",
+        permission="notification:tenant_dashboard",
+        stream_key_of=lambda ident: tenant_stream_key(ident.tenant_id),
     )
 
 
 @router.websocket("/ws/jobs/{job_id}")
-async def websocket_job_events(
-    websocket: WebSocket,
-    job_id: str,
-) -> None:
+async def websocket_job_events(websocket: WebSocket, job_id: str) -> None:
     """
-    WebSocket nhận event riêng của một job.
+    Nhận event của MỘT job (vd màn hình chi tiết job).
 
-    Client kết nối:
-    ws://127.0.0.1:8001/quan/noti/ws/jobs/<JOB_ID>?token=<JWT>&last_event_id=0-0
-
-    Quyền cần có:
-    notification:job_watch
-
-    Lưu ý:
-    - Endpoint này chỉ xác thực bằng token và tenant_id trong token.
-    - Nếu muốn kiểm tra job_id có thật sự thuộc user không,
-      có thể để API service cấp một job_watch_token riêng ngắn hạn.
+    Ticket phải được API server cấp với đúng job_id này (API chịu trách nhiệm
+    kiểm tra job có thuộc về user hay không trước khi cấp ticket).
     """
-
-    try:
-        identity = await get_current_identity_from_websocket(websocket)
-    except ValueError as exc:
-        await websocket.close(code=4401, reason=str(exc))
+    if not _JOB_ID_RE.match(job_id):
+        await websocket.accept()
+        await NotiController.safe_close(websocket, close_codes.BAD_REQUEST, "invalid_job_id")
         return
 
-    if identity.channel != "job":
-        await websocket.close(code=4403, reason="Ticket channel mismatch")
-        return
-
-    if identity.job_id != job_id:
-        await websocket.close(code=4403, reason="Ticket job_id mismatch")
-        return
-
-    if not identity_has_permission(identity, "notification:job_watch"):
-        await websocket.close(code=4403, reason="Missing permission")
-        return
-
-    stream_key = job_stream_key(identity.tenant_id, job_id)
-
-    await NotiController.run_stream_websocket(
-        websocket=websocket,
-        identity=identity,
-        stream_key=stream_key,
+    await _serve_channel(
+        websocket,
         channel="job",
+        permission="notification:job_watch",
+        stream_key_of=lambda ident: job_stream_key(ident.tenant_id, job_id),
+        job_id=job_id,
     )
+
 
 @router.websocket("/ws/global-events")
 async def websocket_global_events(websocket: WebSocket) -> None:
     """
-    WebSocket nhận event toàn cục.
-
-    Client kết nối:
-    ws://127.0.0.1:8001/quan/noti/ws/global-events?ticket=<WEBSOCKET_TICKET>&last_event_id=0-0
-    Endpoint này dành cho admin/superuser theo dõi toàn bộ event của hệ thống, phục vụ mục đích monitoring/logging.
+    Event toàn hệ thống, dành cho superuser/đội vận hành (monitoring).
+    Ticket phải được API server cấp với channel=global và quyền notification:global_subscribe.
     """
-    # Xác thực WebSocket ticket và lấy identity.
-    # Nếu có lỗi xác thực, đóng WebSocket với code 4401 (Unauthorized).
-    print("Đã vào đây")
-    try:
-        identity = await get_current_identity_from_websocket(websocket)
-    except ValueError as exc:
-        await websocket.close(code=4401, reason=str(exc))
-        return
-
-    print("Đã vào đây 1")
-    # Kiểm tra channel trong ticket phải là "global", nếu không thì đóng WebSocket với code 4403 (Forbidden).
-    if identity.channel != "global":
-        await websocket.close(code=4403, reason="Ticket không hợp lệ cho channel này")
-        return
-
-    print("Đã vào đây 2")
-    # Kiểm tra quyền "notification:global_subscribe", nếu không có thì đóng WebSocket với code 4403 (Forbidden).
-    if not identity_has_permission(identity, "notification:global_subscribe"):
-        await websocket.close(code=4403, reason="Ticket không có quyền truy cập")
-        return
-
-    stream_key = global_stream_key()
-
-    await NotiController.run_stream_websocket(
-        websocket=websocket,
-        identity=identity,
-        stream_key=stream_key,
+    await _serve_channel(
+        websocket,
         channel="global",
+        permission="notification:global_subscribe",
+        stream_key_of=lambda _ident: global_stream_key(),
     )
