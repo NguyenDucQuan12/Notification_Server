@@ -1,0 +1,9 @@
+# Thư viện cần cho Notification Server (chỉ những gì thực sự dùng).
+# Ghim phiên bản cụ thể để build ở mọi máy/mọi lúc đều ra cùng một kết quả.
+fastapi==0.136.3
+starlette==1.2.1
+uvicorn==0.49.0
+websockets==16.0          # uvicorn dùng thư viện này để xử lý giao thức WebSocket
+pydantic==2.13.4
+pydantic-settings==2.14.1
+redis==8.0.0              # Cần Redis server >= 6.2 (lệnh GETDEL), khuyến nghị >= 7.0
